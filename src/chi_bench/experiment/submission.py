@@ -1149,25 +1149,37 @@ def prepare_packet(
 # ─── Data download (HF dataset + .chi-bench-version) ─────────────────────────
 
 
+def _resolve_hf_cli() -> str:
+    """Return the Hugging Face CLI executable name.
+
+    ``huggingface_hub>=1.0`` ships only ``hf``; the ``huggingface-cli`` shim
+    still exists on PATH but exits non-zero with a deprecation notice, so
+    prefer ``hf`` whenever it is installed.
+    """
+    for candidate in ("hf", "huggingface-cli"):
+        if shutil.which(candidate):
+            return candidate
+    raise RuntimeError(
+        "Hugging Face CLI not on PATH; install with `uv pip install -U 'huggingface_hub[cli]'`."
+    )
+
+
 def download_dataset(
     revision: str,
     repo_id: str = "actava/chi-bench",
     data_root: Path = Path("data"),
 ) -> Path:
-    """Wrap ``huggingface-cli download`` and pin the revision tag.
+    """Wrap ``hf download`` (or legacy ``huggingface-cli``) and pin the revision tag.
 
     Writes ``data_root/.chi-bench-version`` so subsequent submission preflight
     can verify the data on disk matches ``sub.yaml``'s ``dataset.version``.
     """
-    if not shutil.which("huggingface-cli"):
-        raise RuntimeError(
-            "huggingface-cli not on PATH; install with `uv pip install -U 'huggingface_hub[cli]'`."
-        )
+    hf_cli = _resolve_hf_cli()
     data_root.mkdir(parents=True, exist_ok=True)
     logger.info("downloading %s revision %s into %s", repo_id, revision, data_root)
     subprocess.run(
         [
-            "huggingface-cli",
+            hf_cli,
             "download",
             repo_id,
             "--repo-type",

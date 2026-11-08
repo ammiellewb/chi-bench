@@ -215,7 +215,7 @@ Configs:
   Judge voting defaults to one; `CHI_BENCH_JUDGE_NUM_VOTES` configures additional votes.
 - **Dataset version pin** lives at `data/.chi-bench-version` and must match the submission YAML's
   `dataset.version`. Also require `dataset.content_sha256` to match the accepted task/shared-world/handbook bytes; inspect candidates with `uv run python scripts/dataset_identity.py --data-root data`, without rewriting source data or automatically accepting drift. `cb submission validate` (preflight) rejects mismatches. `cb data download`
-  writes the pin in one step; the raw `huggingface-cli download` path needs `echo "$REV" > data/.chi-bench-version`.
+  writes the pin in one step; the raw `hf download` path needs `echo "$REV" > data/.chi-bench-version` (`huggingface-cli` is a dead shim under huggingface_hub>=1.0; `download_dataset` prefers `hf`).
 - **Model-id convention for `claude-code`:** `cb` configs/submissions pass `anthropic/<bare-id>`
   (e.g. `anthropic/claude-fable-5`); Harbor's harness strips the vendor prefix and exports
   `ANTHROPIC_MODEL=<bare-id>` to the claude CLI. Bare ids are only needed for raw `harbor run`

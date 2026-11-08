@@ -227,7 +227,7 @@ uv run cb data verify --data-dir /opt/chi-bench
 
 ### `cb data download`
 
-Convenience wrapper around `huggingface-cli download` that also writes the revision tag to `data/.chi-bench-version` so submission preflight can verify the pin.
+Convenience wrapper around `hf download` (falls back to the legacy `huggingface-cli`) that also writes the revision tag to `data/.chi-bench-version` so submission preflight can verify the pin.
 
 ```
 cb data download --revision <tag> [--repo-id actava/chi-bench] [--data-dir data]
@@ -245,7 +245,7 @@ cb data download --revision <tag> [--repo-id actava/chi-bench] [--data-dir data]
 
 ```bash
 REV=chi-bench-v1.0.0
-uv run huggingface-cli download actava/chi-bench --repo-type dataset \
+uv run hf download actava/chi-bench --repo-type dataset \
     --revision "$REV" --local-dir data/
 echo "$REV" > data/.chi-bench-version
 ```

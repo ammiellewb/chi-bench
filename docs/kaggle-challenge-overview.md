@@ -72,10 +72,10 @@ uv sync --extra dev
 Download the pinned public task release:
 
 ```bash
-uv run huggingface-cli login
+uv run hf auth login
 
 REV=chi-bench-v1.0.0
-uv run huggingface-cli download actava/chi-bench \
+uv run hf download actava/chi-bench \
   --repo-type dataset \
   --revision "$REV" \
   --local-dir data/
@@ -85,7 +85,7 @@ echo "$REV" > data/.chi-bench-version
 Before continuing, request and obtain approval for the [Managed-Care Operations Handbook](https://huggingface.co/datasets/actava/managed-care-operations-handbook). Once approved, download it:
 
 ```bash
-uv run huggingface-cli download actava/managed-care-operations-handbook \
+uv run hf download actava/managed-care-operations-handbook \
   --repo-type dataset \
   --local-dir data/skills/
 ```

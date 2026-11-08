@@ -68,10 +68,10 @@ Provide whichever provider keys you need for the rows you intend to run. Hugging
 **3. Task fixtures from Hugging Face.** Authenticate once with the CLI, then download the gated dataset:
 
 ```bash
-uv run huggingface-cli login
+uv run hf auth login
 
 REV=chi-bench-v1.0.0
-uv run huggingface-cli download actava/chi-bench --repo-type dataset --revision "$REV" --local-dir data/
+uv run hf download actava/chi-bench --repo-type dataset --revision "$REV" --local-dir data/
 echo "$REV" > data/.chi-bench-version
 ```
 
@@ -85,7 +85,7 @@ the evaluated content.
 The handbook (1,279 markdown documents) is distributed separately as the **gated** Hugging Face dataset **[actava/managed-care-operations-handbook](https://huggingface.co/datasets/actava/managed-care-operations-handbook)** (size + curation provenance with clinical collaborators). Request access on that repo's page; once approved, download it into `data/skills/` with your HF token:
 
 ```bash
-uv run huggingface-cli download actava/managed-care-operations-handbook \
+uv run hf download actava/managed-care-operations-handbook \
     --repo-type dataset --local-dir data/skills/
 # -> data/skills/managed-care-operations-handbook/{SKILL.md,references/}
 ```
