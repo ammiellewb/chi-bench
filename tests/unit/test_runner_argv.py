@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import yaml
 
 from chi_bench.experiment.config import ExperimentConfig
@@ -193,3 +195,47 @@ def test_openai_agent_does_not_receive_native_judge_or_download_credentials(tmp_
     pairs = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "--ae"]
     assert "OPENAI_API_KEY=agent-key" in pairs
     assert not any(p.startswith(("ANTHROPIC_API_KEY=", "HF_TOKEN=")) for p in pairs)
+
+
+def _write_task(task_dir, *, with_environment: bool) -> None:
+    task_dir.mkdir(parents=True)
+    (task_dir / "task.toml").write_text('schema_version = "1.1"\n')
+    (task_dir / "instruction.md").write_text("do the thing\n")
+    if with_environment:
+        (task_dir / "environment").mkdir()
+
+
+def test_dataset_needs_environment_stubs_detects_fresh_downloads(tmp_path):
+    from chi_bench.experiment.runner import _dataset_needs_environment_stubs
+
+    fresh = tmp_path / "fresh"
+    _write_task(fresh / "cm_a", with_environment=False)
+    _write_task(fresh / "cm_b", with_environment=True)
+    staged = tmp_path / "staged"
+    _write_task(staged / "cm_a", with_environment=True)
+    single = tmp_path / "single"
+    _write_task(single, with_environment=False)
+
+    assert _dataset_needs_environment_stubs(str(fresh)) is True
+    assert _dataset_needs_environment_stubs(str(staged)) is False
+    assert _dataset_needs_environment_stubs(str(single)) is True
+    assert _dataset_needs_environment_stubs(str(tmp_path / "missing")) is False
+
+
+def test_prepare_dataset_mirrors_tasks_with_environment_stubs(tmp_path):
+    from chi_bench.experiment.runner import _prepare_dataset
+
+    src = tmp_path / "tasks"
+    _write_task(src / "cm_a", with_environment=False)
+    (src / "cm_a" / "fixtures").mkdir()
+    (src / "cm_a" / "fixtures" / "manifest.json").write_text("{}")
+
+    with _prepare_dataset(str(src)) as mirrored:
+        mirrored_task = Path(mirrored) / "cm_a"
+        assert (mirrored_task / "environment").is_dir()
+        assert (mirrored_task / "task.toml").read_bytes() == (
+            src / "cm_a" / "task.toml"
+        ).read_bytes()
+        assert (mirrored_task / "fixtures" / "manifest.json").read_text() == "{}"
+        assert not (src / "cm_a" / "environment").exists()
+    assert not Path(mirrored).exists()

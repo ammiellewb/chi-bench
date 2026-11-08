@@ -240,16 +240,38 @@ def _mirror_task_for_modal(src_task_dir: Path, dst_task_dir: Path) -> None:
     (dst_task_dir / "environment").mkdir(exist_ok=True)
 
 
+def _dataset_needs_environment_stubs(dataset_path: str) -> bool:
+    """True when any task under ``dataset_path`` lacks Harbor's ``environment/`` dir.
+
+    Harbor 0.20 drops a task from ``DatasetConfig.get_task_configs()`` when that
+    directory is missing, and the published HF dataset cannot carry empty
+    directories, so a fresh ``cb data download`` yields zero discoverable
+    tasks on every backend until the stubs exist.
+    """
+    src = Path(dataset_path)
+    if (src / "task.toml").exists():
+        return not (src / "environment").is_dir()
+    if not src.is_dir():
+        return False
+    return any(
+        (child / "task.toml").exists() and not (child / "environment").is_dir()
+        for child in src.iterdir()
+        if child.is_dir()
+    )
+
+
 @contextmanager
-def _prepare_modal_dataset(dataset_path: str) -> Iterator[str]:
+def _prepare_dataset(dataset_path: str, *, prefix: str = "chi_bench-dataset-") -> Iterator[str]:
     """Yield a dataset path with environment stubs and unchanged task files.
 
     Accepts either a single-task directory (has ``task.toml``) or a parent
     directory containing multiple task subdirs. The returned path is a temp
     tree of byte-preserved file copies; the temp dir is removed on exit.
+    Used by both backends: Modal always (the mirror is shipped to a sandbox)
+    and Docker whenever the source tree lacks ``environment/`` stubs.
     """
     src = Path(dataset_path).resolve(strict=True)
-    tmp_root = Path(tempfile.mkdtemp(prefix="chi_bench-modal-"))
+    tmp_root = Path(tempfile.mkdtemp(prefix=prefix))
     try:
         if (src / "task.toml").exists():
             mirrored = tmp_root / src.name
@@ -270,6 +292,11 @@ def _prepare_modal_dataset(dataset_path: str) -> Iterator[str]:
             yield str(tmp_root)
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)
+
+
+def _prepare_modal_dataset(dataset_path: str) -> AbstractContextManager[str]:
+    """Backward-compatible alias for :func:`_prepare_dataset` (Modal prefix)."""
+    return _prepare_dataset(dataset_path, prefix="chi_bench-modal-")
 
 
 def _prepare_trials_dir(trials_dir: str | None) -> None:
@@ -385,6 +412,11 @@ def run_experiment(
     if cfg.environment == "modal":
         _modal_preflight(cfg.modal.profile)
         dataset_ctx = _prepare_modal_dataset(cfg.dataset)
+    elif _dataset_needs_environment_stubs(cfg.dataset):
+        # Fresh HF downloads have no environment/ dirs; Harbor would otherwise
+        # discover zero tasks and fail with "Either datasets or tasks must be
+        # provided." Mirror with stubs (byte-identical task files).
+        dataset_ctx = _prepare_dataset(cfg.dataset)
     else:
         dataset_ctx = nullcontext(cfg.dataset)
 
