@@ -11,7 +11,7 @@ command, so A/B arms share one harness class and differ only by the listed compo
 | `preflight` | 1 — executable preflight | Terminal actions (submit, finalize, appeal, respond-to-pend, deliver, complete assessment, finalize care plan, disenroll, P2P summary) are blocked until `preflight.json` names the tool, has `ready: true`, and every check is `pass` with evidence or `na`. After success the preflight is archived and the agent is told to confirm state with a read-only call; after an error it is told to repair input first. | PreToolUse + PostToolUse on chi-bench tools |
 | `policy_trace` | 2 — traceable policy use | Decision-bearing calls require `policy_trace.jsonl` entries whose `source_file` resolves inside the handbook and whose `quote` appears verbatim in that file. Ships the `policy-locator` skill and `policy_locate.py` (keyword search over `references/**/*.md`). Logs handbook reads to `policy_reads.jsonl`. | PreToolUse on chi-bench tools; PostToolUse on `Read`/`Bash` |
 | `criteria_ledger` | 3 — reasoning before execution | Decision-bearing calls require `criteria_ledger.json`: every criterion has text, a policy source, `met` ∈ {yes, no, unknown}, chart evidence for yes/no, and a next action for unknown; a ledger for another case is rejected. | PreToolUse on chi-bench tools |
-| `consent_gate` | 4 — patient autonomy | Not a stop rule (the rubric still requires affirmative enrollment). Ending an outreach call with `consent_obtained: true` or `engagement_status: engaged` requires `consent_record.json` with a verbatim patient quote that appears in the captured outreach turns. Refusal language in a patient reply triggers coaching: acknowledge, do not probe, one low-commitment option. | PreToolUse + PostToolUse on `cm_outreach.*` |
+| `consent_gate` | 4 — patient autonomy | Not a stop rule (the rubric still requires affirmative enrollment). Ending an outreach call with `consent_obtained: true` or `engagement_status: engaged` requires `consent_record.json` with a verbatim patient quote that appears in the captured outreach turns. Refusal language in a patient reply triggers coaching: acknowledge, do not probe, one low-commitment option. A care-manager turn with three or more questions, or an overloaded patient reply, triggers pacing coaching: one narrow topic per turn with fresh permission. | PreToolUse + PostToolUse on `cm_outreach.*` |
 
 An always-on observer (`observe_hook.py`) is added whenever any mechanism is active. It
 writes one `tool_call` event per call and captures outreach turns; it never blocks.
@@ -73,9 +73,19 @@ costing turns, and the paper's timeout share (7.6 %) is the budget it eats into.
 - `src/chi_bench/experiment/agents/claude_code_mechanisms_harness.py` — uploads the bundle,
   writes `$CLAUDE_CONFIG_DIR/settings.json`, copies skills, appends the composed prompt.
 
-Hooks match both native MCP names (`mcp__<server>__ns.method`) and the mcporter CLI form
+Claude Code sanitizes dotted MCP tool names, so hooks see `mcp__healthverse__cm_intake_open_case`; the matcher accepts `.`, `_`, `__` and `-` between namespace and method. Hooks match native MCP names and the mcporter CLI form
 (`Bash` running `npx mcporter call <alias> ns.method`), so the scripts also work if the
 harness is later combined with `tool_mode: cli`.
+
+## Smoke result (2026-11-08)
+
+One CM task (`cm_asthma_low_coop_001`), Sonnet 5.5, `mechanisms: all`, local Docker: hooks fired
+from `$CLAUDE_CONFIG_DIR/settings.json` under Claude Code 2.1.219 in print mode; every gate was
+satisfied first time (0 denies, all five record files written); 47 turns, $2.58 agent cost, 5.5 min
+agent wall clock; deterministic checks 14/14 and judge rubrics 4/5. The miss was
+`judge.cm.outreach.quality`: after consent the agent bundled a screening batch into one turn
+(the patient replied "that's a lot at once"), which the rubric treats as a hard fail. That gap
+motivated the pacing coaching in `consent_gate`.
 
 ## Competition note
 

@@ -12,7 +12,9 @@ them.
 
 PostToolUse on ``cm_outreach.send_message``: when the patient reply contains
 refusal or hesitation language, the model is coached to acknowledge it,
-stop probing, and offer one low-commitment option.
+stop probing, and offer one low-commitment option. When the patient signals
+overload, or the care manager's own turn bundled several questions, the
+model is coached to pace: one narrow topic per turn with fresh permission.
 """
 
 from __future__ import annotations
@@ -35,6 +37,13 @@ CAPTURE_FILE = "outreach_capture.jsonl"
 END_CALL_TOOL = "cm_outreach.end_outreach_call"
 SEND_TOOL = "cm_outreach.send_message"
 MIN_QUOTE_CHARS = 12
+
+OVERLOAD_RE = re.compile(
+    r"(?i)\b(that'?s a lot|lot at once|slow down|hold on|one at a time|too many questions|"
+    r"whew|overwhelm\w*|can we not|do we have to)\b"
+)
+# Three or more questions in one care-manager turn reads as a checklist harvest.
+QUESTION_BUNDLE_THRESHOLD = 3
 
 REFUSAL_RE = re.compile(
     r"(?i)\b(not interested|no thank|don'?t want|do not want|rather not|stop calling|"
@@ -118,7 +127,7 @@ def post_tool_use(payload: dict[str, Any]) -> int:
     text = mc.response_text(payload.get("tool_response"))
     match = REFUSAL_RE.search(text)
     if not match:
-        return 0
+        return _pacing_feedback(mc.tool_args(tool_name, tool_input), text)
     mc.log_event("refusal_detected", mechanism=MECHANISM, tool=SEND_TOOL, phrase=match.group(0))
     return mc.post_feedback(
         f"[consent_gate] The patient said something like {match.group(0)!r}. Respect it: "
@@ -127,6 +136,30 @@ def post_tool_use(payload: dict[str, Any]) -> int:
         "mailed information) and accept a no. Log the exact words under "
         "refusals_or_hesitations in consent_record.json. Only record consent later if the "
         "patient explicitly agrees after the consent script.",
+        mechanism=MECHANISM,
+        tool=SEND_TOOL,
+        prompt=False,
+    )
+
+
+def count_questions(message: str) -> int:
+    return message.count("?")
+
+
+def _pacing_feedback(args: dict[str, Any], patient_text: str) -> int:
+    """Coach pacing after a bundled turn or an overloaded patient reply."""
+    message = str(args.get("message") or "")
+    bundled = count_questions(message) >= QUESTION_BUNDLE_THRESHOLD
+    overload = OVERLOAD_RE.search(patient_text)
+    if not bundled and not overload:
+        return 0
+    trigger = overload.group(0) if overload else f"{count_questions(message)} questions in one turn"
+    mc.log_event("pacing_detected", mechanism=MECHANISM, tool=SEND_TOOL, phrase=trigger)
+    return mc.post_feedback(
+        f"[consent_gate] Pacing: {trigger!r}. Enrollment consent is not permission for a "
+        "same-call screening harvest. Ask one narrow question per turn, say why it is "
+        "relevant, ask permission before each new sensitive topic, remind the patient they "
+        "can skip or stop, and make no promise about cost, approval, or outcomes.",
         mechanism=MECHANISM,
         tool=SEND_TOOL,
         prompt=False,

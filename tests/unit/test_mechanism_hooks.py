@@ -444,3 +444,33 @@ def test_read_payload_tolerates_garbage() -> None:
     assert mech_common.read_payload(io.StringIO("")) == {}
     assert mech_common.read_payload(io.StringIO("not json")) == {}
     assert mech_common.read_payload(io.StringIO("[1,2]")) == {}
+
+
+def test_consent_gate_coaches_pacing_on_bundled_questions(state: Path, capsys) -> None:
+    payload = _mcp(
+        "cm_outreach.send_message",
+        {"session_id": "S1", "message": "How is sleep? Any low mood? Drinking? Any falls?"},
+        "PostToolUse",
+        {"patient_response": "Uh, sleep is fine I guess."},
+    )
+    assert consent_gate_hook.post_tool_use(payload) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert "one narrow question per turn" in out["hookSpecificOutput"]["additionalContext"]
+    events = mech_common.load_jsonl(state / "events.jsonl")
+    assert events[0]["kind"] == "pacing_detected" and "4 questions" in events[0]["phrase"]
+
+
+def test_consent_gate_coaches_pacing_on_patient_overload(state: Path, capsys) -> None:
+    payload = _mcp(
+        "cm_outreach.send_message",
+        {"session_id": "S1", "message": "Can I ask about your inhaler?"},
+        "PostToolUse",
+        {"patient_response": "Whew, okay, that's a lot at once. Let me think."},
+    )
+    assert consent_gate_hook.post_tool_use(payload) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert "Pacing" in out["hookSpecificOutput"]["additionalContext"]
+    capsys.readouterr()
+    payload["tool_response"] = {"patient_response": "Sure, the morning one I take every day."}
+    assert consent_gate_hook.post_tool_use(payload) == 0
+    assert capsys.readouterr().out == ""

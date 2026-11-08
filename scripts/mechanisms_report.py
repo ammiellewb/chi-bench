@@ -112,7 +112,8 @@ def summarize_trial(trial_dir: Path) -> dict[str, Any] | None:
 
 
 def find_trials(root: Path) -> list[Path]:
-    return sorted(p.parent.parent for p in root.rglob("agent/mechanisms/events.jsonl"))
+    # <trial>/agent/mechanisms/events.jsonl -> <trial>
+    return sorted(p.parents[2] for p in root.rglob("agent/mechanisms/events.jsonl"))
 
 
 def summarize_root(root: Path) -> dict[str, Any]:

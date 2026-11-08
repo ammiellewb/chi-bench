@@ -1,0 +1,17 @@
+# One-task smoke of the claude-code-mechanisms harness (all four mechanisms)
+# on a care-management task. Validates: hook install, settings.json pickup,
+# gate firing, and artifact download. ~$1-3 on Sonnet 5.5 incl. judge.
+environment: docker
+env_file: .env
+concurrency: 1
+n_attempts: 1
+max_retries: 0
+agent: claude-code-mechanisms
+model: anthropic/claude-sonnet-5-5
+dataset: data/care_management/tasks
+registry_path: data/care_management/registry.json
+n_tasks: 1
+agent_kwargs:
+  mechanisms: all
+  max_turns: "120"
+trials_dir: logs/experiments/smoke/mechanisms_smoke_cm

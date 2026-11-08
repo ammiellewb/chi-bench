@@ -61,9 +61,11 @@ VERIFY_HINTS: dict[str, str] = {
     "determination": "determination.get_summary",
     "payer_letter_center": "payer_letter_center.list / payer_letter_center.get",
     "p2p_session": "p2p_session.get_context",
-    "cm_assessment": "cm_intake.get_case",
-    "cm_care_plan": "cm_intake.get_case",
-    "cm_intake": "cm_intake.get_case",
+    # The CM surface exposes no case read-back tool; the finalize/complete
+    # responses carry the resulting status, so verify from the response.
+    "cm_assessment": "the status fields in the complete_assessment response",
+    "cm_care_plan": "the status fields in the finalize response",
+    "cm_intake": "cm_intake.list_referral_queue",
 }
 
 VALID_STATUS = {"pass", "fail", "na"}

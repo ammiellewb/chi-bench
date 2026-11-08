@@ -104,7 +104,10 @@ _CONSENT_GATE_PROMPT = """\
 Engage autonomy-first: explain who you are and why you are calling, perform the consent \
 script, and ask for an explicit yes before enrolling. If the patient hesitates or declines, \
 acknowledge it in one sentence, do not probe for concerns or re-pitch, offer at most one \
-low-commitment option, and accept a no. Keep `{state}/consent_record.json` current:
+low-commitment option, and accept a no. Consent to enroll is not consent to be screened: \
+after enrollment ask one narrow question per turn, explain its relevance, ask permission \
+before each new sensitive topic, and remind the patient they can skip or stop. Never bundle \
+several questions in one message. Keep `{state}/consent_record.json` current:
 {{"session_id": "<id>", "consent_script_performed": true|false, "patient_affirmative_quote": \
 "<patient's exact words agreeing>", "refusals_or_hesitations": ["<exact words>"], \
 "response_to_refusal": "<how you acknowledged it>"}}
