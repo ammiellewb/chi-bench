@@ -272,6 +272,13 @@ Configs:
 - **Do not force a named tool choice for models with always-on/adaptive thinking.** Fable 5 and
   Kimi K3 reject forced tool selection while thinking is enabled; use `auto` plus an imperative
   prompt, then validate that the expected tool call actually occurred and replay all reasoning.
+- **Harness A/B mechanisms live in `experiment/agents/mechanisms/` and run as Claude Code hooks, not as Dockerfile changes.** `claude-code-mechanisms` uploads stdlib-only hook scripts to
+  `/logs/agent/mechanisms` at run time and writes `$CLAUDE_CONFIG_DIR/settings.json`; nothing is
+  baked into `chi-bench:agent`. Select arms with `agent_kwargs: { mechanisms: preflight,... | all }`;
+  an empty value is the exact stock baseline. **Why:** Harbor's `CliFlag` renders
+  `--append-system-prompt` unquoted, so the harness composes and `shlex.quote`s the prompt itself;
+  hook scripts must stay stdlib-only and dual-mode (package import for tests, bare `python3 -I`
+  in the container). See `docs/mechanisms.md`.
 - **Agent-phase failures: read `trials/<name>/agent/claude-code.txt` tail first.** The stream-json
   log carries the raw API error + request_id; `NonZeroAgentExitCodeError` alone says nothing.
   Known case: Fable 5 (`claude-fable-5`) 400s with `model_not_available` ("organization or

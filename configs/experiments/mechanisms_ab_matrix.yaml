@@ -1,0 +1,43 @@
+name: mechanisms_ab_matrix
+description: >
+  A/B matrix for the hook-enforced harness mechanisms in `claude-code-mechanisms`.
+  Row 1 is the exact stock baseline (same harness class, no mechanisms); rows 2-5
+  enable one mechanism each; row 6 enables all four. Every row differs from the
+  baseline by exactly the listed component, so per-mechanism deltas are attributable.
+  Decompose with `./scripts/run_table.sh mechanisms_ab_matrix` (add `--row N` for a
+  single arm) and summarize hook activity with `scripts/mechanisms_report.py`.
+
+defaults:
+  environment: docker
+  env_file: .env
+  concurrency: 5
+  n_attempts: 1
+  max_retries: 2
+  trials_root: logs/experiments/mechanisms_ab_matrix
+  agent_timeout_multiplier: 2
+  # Smoke slice: 5 tasks per domain. Remove `n_tasks` for the full 75-task row.
+  n_tasks: 5
+
+domains:
+  pa_provider:
+    dataset: data/prior_auth_provider/tasks
+    registry_path: data/prior_auth_provider/registry.json
+  pa_um:
+    dataset: data/prior_auth_um/tasks
+    registry_path: data/prior_auth_um/registry.json
+  cm:
+    dataset: data/care_management/tasks
+    registry_path: data/care_management/registry.json
+
+rows:
+  - { agent: claude-code-mechanisms, model: anthropic/claude-sonnet-5-5 }
+  - { agent: claude-code-mechanisms, model: anthropic/claude-sonnet-5-5,
+      agent_kwargs: { mechanisms: preflight } }
+  - { agent: claude-code-mechanisms, model: anthropic/claude-sonnet-5-5,
+      agent_kwargs: { mechanisms: policy_trace } }
+  - { agent: claude-code-mechanisms, model: anthropic/claude-sonnet-5-5,
+      agent_kwargs: { mechanisms: criteria_ledger } }
+  - { agent: claude-code-mechanisms, model: anthropic/claude-sonnet-5-5,
+      agent_kwargs: { mechanisms: consent_gate } }
+  - { agent: claude-code-mechanisms, model: anthropic/claude-sonnet-5-5,
+      agent_kwargs: { mechanisms: all } }

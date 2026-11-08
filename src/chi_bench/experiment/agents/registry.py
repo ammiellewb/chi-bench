@@ -35,6 +35,9 @@ IN_TREE_AGENT_IMPORT_PATHS: dict[str, str] = {
     "hermes": "chi_bench.experiment.agents.hermes_harness:HermesHarness",
     "codex-cli": "chi_bench.experiment.agents.codex_cli_harness:CodexCLIHarness",
     "claude-code-cli": "chi_bench.experiment.agents.claude_code_cli_harness:ClaudeCodeCLIHarness",
+    "claude-code-mechanisms": (
+        "chi_bench.experiment.agents.claude_code_mechanisms_harness:ClaudeCodeMechanismsHarness"
+    ),
 }
 
 HARBOR_BUILTIN_AGENTS: frozenset[str] = frozenset({"claude-code", "codex"})
@@ -64,6 +67,11 @@ AGENT_ENV_VARS: dict[str, tuple[str, ...]] = {
     "hermes": ("OPENAI_API_KEY", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY"),
     "codex-cli": ("OPENAI_API_KEY",),
     "claude-code-cli": ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
+    "claude-code-mechanisms": (
+        "ANTHROPIC_API_KEY",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+    ),
     "claude-code": ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_BASE_URL"),
     "codex": ("OPENAI_API_KEY",),
 }

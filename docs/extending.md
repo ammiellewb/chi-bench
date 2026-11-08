@@ -8,6 +8,7 @@ To climb the leaderboard you swap in a better **model**, a better **agent harnes
 | Plug in your own agent loop | [§ 2](#-2-new-agent-harness) | Yes (~50–500 lines) |
 | Both | [§ 3](#-3-both) | Yes |
 | See what's registered | `cb agent list` | — |
+| Toggle hook-enforced workflow mechanisms on Claude Code | [`docs/mechanisms.md`](mechanisms.md) | No (`agent_kwargs.mechanisms`) |
 
 ---
 
