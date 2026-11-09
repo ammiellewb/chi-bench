@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- `openai-agents` no longer aborts a trial when the model misnames a tool. Separator
+  variants (`local_fs_read`, `chart.get_patient`) resolve to the registered tool, and an
+  invented tool name returns an error to the model instead of raising
+  `ModelBehaviorError`. Exceptions inside a tool (invalid JSON arguments, MCP transport
+  errors) also return as tool errors. 33 of the 100 saved Qwen/Gemma trials ended on this
+  abort.
+
+### Added
+
+- `openai-agents` writes `agent/stages.jsonl` (per model call and per tool call, flushed as
+  they happen) and a `stages` summary plus, on exceptions, `partial_usage` in
+  `run_result.json`, so timed-out trials can be diagnosed per stage.
+- `openai-agents` accepts the `claude-code-mechanisms` components
+  (`agent_kwargs: {mechanisms: ...}`); the same hook scripts run in-process around every
+  tool call. Opt-in `progress_nudge_turn` and `turn_budget_warning` nudges.
+- `litellm/<id>` model prefix (or `provider_route: litellm`) with `LITELLM_BASE_URL` /
+  `LITELLM_API_KEY` for `openai-agents` (any OpenAI-compatible server) and
+  `claude-code-mechanisms` (LiteLLM Anthropic passthrough).
+- Hook bundles now include `prompt.md`.
+
 ## 1.1.0 — 2026-10-06
 
 ### Fixes

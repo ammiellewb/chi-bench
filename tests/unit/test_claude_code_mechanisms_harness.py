@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
 from pathlib import Path
 
@@ -125,3 +126,30 @@ def test_harness_preserves_user_skills_dir(tmp_path: Path) -> None:
     )
     command = harness._build_register_skills_command() or ""
     assert "/opt/user-skills" in command and "/logs/agent/mechanisms/skills" in command
+
+
+def test_litellm_route_points_claude_code_at_the_proxy(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+    harness = ClaudeCodeMechanismsHarness(
+        logs_dir=tmp_path,
+        mechanisms="preflight",
+        model_name="litellm/qwen3-35b",
+        extra_env={
+            "LITELLM_BASE_URL": "http://gpubox:4000",
+            "LITELLM_API_KEY": "proxy-key",
+            "ANTHROPIC_API_KEY": "native-key",
+        },
+    )
+    assert harness.model_name == "qwen3-35b"
+    assert harness._parsed_model_name == "qwen3-35b" and harness._parsed_model_provider is None
+    assert harness.extra_env["ANTHROPIC_API_KEY"] == "proxy-key"
+    assert harness.extra_env["ANTHROPIC_BASE_URL"] == "http://gpubox:4000"
+    assert os.environ["ANTHROPIC_BASE_URL"] == "http://gpubox:4000"
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+
+
+def test_litellm_route_requires_base_url_and_rejects_unknown_routes(tmp_path: Path) -> None:
+    with pytest.raises(RuntimeError, match="LITELLM_BASE_URL"):
+        ClaudeCodeMechanismsHarness(logs_dir=tmp_path, provider_route="litellm", model_name="x")
+    with pytest.raises(ValueError, match="provider_route"):
+        ClaudeCodeMechanismsHarness(logs_dir=tmp_path, provider_route="tinker", model_name="x")

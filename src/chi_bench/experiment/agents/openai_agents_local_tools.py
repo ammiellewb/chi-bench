@@ -30,6 +30,7 @@ from typing import Any
 from agents.tool import FunctionTool, RunContextWrapper
 
 from chi_bench.experiment.agents import openai_agents_runner as _runner
+from chi_bench.experiment.agents.openai_agents_resilience import UNKNOWN_TOOL_SINK
 
 
 def _spill(text: str, *, tool_name: str, logs_dir: Path) -> str:
@@ -434,6 +435,39 @@ def _make_python_execute(logs_dir: Path) -> FunctionTool:
             "additionalProperties": False,
         },
         on_invoke_tool=_on,
+        strict_json_schema=False,
+    )
+
+
+async def _on_unknown_tool(_context: RunContextWrapper, params_str: str) -> Any:
+    try:
+        params = json.loads(params_str) if params_str else {}
+    except (TypeError, ValueError):
+        params = {}
+    if not isinstance(params, dict):
+        params = {}
+    name = str(params.get("name") or "<unnamed>")
+    suggestions = [str(s) for s in params.get("suggestions") or [] if s]
+    hint = f" Did you mean: {', '.join(suggestions)}?" if suggestions else ""
+    return (
+        f"ERROR: tool '{name}' does not exist in this session.{hint} Use only the tools "
+        "listed in your tool definitions, spelled exactly as listed, and retry the call."
+    )
+
+
+def build_unknown_tool_sink() -> FunctionTool:
+    """Hidden catch-all for tool names the model invented.
+
+    ``openai_agents_resilience.ResilientModel`` strips this tool from the list
+    sent to the model and reroutes unresolvable calls to it, so the model gets
+    an error result instead of the SDK raising ``ModelBehaviorError`` and
+    ending the run.
+    """
+    return FunctionTool(
+        name=UNKNOWN_TOOL_SINK,
+        description="Internal harness sink for unknown tool calls; never shown to the model.",
+        params_json_schema={"type": "object", "properties": {}, "additionalProperties": True},
+        on_invoke_tool=_on_unknown_tool,
         strict_json_schema=False,
     )
 

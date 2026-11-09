@@ -175,6 +175,7 @@ def test_agent_source_copy_is_closed_over_its_benchmark_imports():
         "src/chi_bench/experiment/agents/__init__.py",
         "src/chi_bench/experiment/agents/openai_agents_runner.py",
         "src/chi_bench/experiment/agents/openai_agents_local_tools.py",
+        "src/chi_bench/experiment/agents/openai_agents_resilience.py",
         "src/chi_bench/experiment/agents/nemotron_tinker_model.py",
         "src/chi_bench/experiment/agents/nemotron_tool_protocol.py",
     }

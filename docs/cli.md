@@ -117,7 +117,7 @@ A flat `ExperimentConfig` YAML, or a row in a matrix expanded by `scripts/_emit_
 
 Harbor resolves `${VAR}` from the host environment and supports `${VAR:-default}` when a variable may be absent. Keep credentials in `.env` and reference them with templates; never hardcode secret values in YAML. To deliberately shadow an automatically forwarded credential with an empty value while retaining resumable Harbor configs, use a stable empty-default template such as `${CHI_BENCH_EMPTY_AGENT_ENV:-}` instead of a literal blank.
 
-Choose the harness by model vendor rather than gateway: Anthropic models such as Fable 5 use stock `claude-code` even through OpenRouter; third-party vendors routed through OpenRouter use `openai-agents`. See [Extending chi-bench](extending.md#case-b-your-model-is-on-openrouter-or-any-vendorid-style-provider) for a complete Fable example.
+Choose the harness by model vendor rather than gateway: Anthropic models such as Fable 5 use stock `claude-code` even through OpenRouter; third-party vendors routed through OpenRouter use `openai-agents`. See [Extending chi-bench](extending.md#case-b-your-model-is-on-openrouter-or-any-vendorid-style-provider) for a complete Fable example. Models served by vLLM or a LiteLLM proxy use the `litellm/<id>` prefix (or `provider_route: litellm`) with `LITELLM_BASE_URL`; see [Harness mechanisms](mechanisms.md#litellm-and-vllm-routing).
 
 **Examples**
 

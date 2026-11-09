@@ -102,6 +102,7 @@ COPY --from=application /workspace/src/chi_bench/experiment/__init__.py /workspa
 COPY --from=application /workspace/src/chi_bench/experiment/agents/__init__.py \
     /workspace/src/chi_bench/experiment/agents/openai_agents_runner.py \
     /workspace/src/chi_bench/experiment/agents/openai_agents_local_tools.py \
+    /workspace/src/chi_bench/experiment/agents/openai_agents_resilience.py \
     /workspace/src/chi_bench/experiment/agents/nemotron_tinker_model.py \
     /workspace/src/chi_bench/experiment/agents/nemotron_tool_protocol.py \
     /workspace/src/chi_bench/experiment/agents/

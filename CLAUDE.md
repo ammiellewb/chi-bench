@@ -272,10 +272,12 @@ Configs:
 - **Do not force a named tool choice for models with always-on/adaptive thinking.** Fable 5 and
   Kimi K3 reject forced tool selection while thinking is enabled; use `auto` plus an imperative
   prompt, then validate that the expected tool call actually occurred and replay all reasoning.
-- **Harness A/B mechanisms live in `experiment/agents/mechanisms/` and run as Claude Code hooks, not as Dockerfile changes.** `claude-code-mechanisms` uploads stdlib-only hook scripts to
+- **Harness A/B mechanisms live in `experiment/agents/mechanisms/` and run as tool hooks, not as Dockerfile changes.** `claude-code-mechanisms` uploads stdlib-only hook scripts to
   `/logs/agent/mechanisms` at run time and writes `$CLAUDE_CONFIG_DIR/settings.json`; nothing is
-  baked into `chi-bench:agent`. Select arms with `agent_kwargs: { mechanisms: preflight,... | all }`;
-  an empty value is the exact stock baseline. **Why:** Harbor's `CliFlag` renders
+  baked into `chi-bench:agent`. `openai-agents` takes the same `mechanisms` kwarg, uploads the same
+  bundle (plus `prompt.md`), and its runner executes the scripts in-process around every tool
+  call via `openai_agents_resilience.MechanismGate`. Select arms with
+  `agent_kwargs: { mechanisms: preflight,... | all }`; an empty value is the exact stock baseline. **Why:** Harbor's `CliFlag` renders
   `--append-system-prompt` unquoted, so the harness composes and `shlex.quote`s the prompt itself;
   hook scripts must stay stdlib-only and dual-mode (package import for tests, bare `python3 -I`
   in the container). See `docs/mechanisms.md`.
@@ -285,6 +287,20 @@ Configs:
   workspace must have data retention enabled") unless the org has data retention on — an
   Anthropic Console setting, not a harness/config bug. Reproduce with a bare curl before
   blaming the pipeline.
+- **The `openai-agents` runner is baked into `chi-bench:agent` from a closed COPY list
+  (`docker/Dockerfile` + `Dockerfile.harbor`, pinned by `tests/unit/test_runtime_assets.py`).**
+  A new runner-side module must be added to both Dockerfiles and the test, and must import no
+  other chi-bench package (`openai_agents_resilience` duplicates the mechanisms defaults for this
+  reason). Rebuild with `uv run cb docker build` before a local trial picks up runner edits.
+- **Misnamed or invented tool calls no longer abort `openai-agents` trials.** The runner resolves
+  separator variants and routes unknown names to a hidden sink that returns an error to the model;
+  diagnose with `agent/stages.jsonl`, the `stages`/`partial_usage` fields in `run_result.json`,
+  and the `requested_name`/`unresolved_tool` fields in `trace.jsonl`. **Why:** 33 of 100 saved
+  Qwen/Gemma trials ended on `ModelBehaviorError` for `local_fs_read`-style names.
+- **LiteLLM/vLLM route:** `model: litellm/<id>` or `agent_kwargs: {provider_route: litellm}` with
+  `LITELLM_BASE_URL` (+ optional `LITELLM_API_KEY`) works for `openai-agents` (any OpenAI-compatible
+  root; vLLM directly) and `claude-code-mechanisms` (LiteLLM Anthropic `/v1/messages` proxy root).
+  Unit-tested only; no live proxy run yet.
 
 ## Subdirectory note
 

@@ -113,11 +113,32 @@ Do not set the proxy base URL or credential process-wide: the judge deliberately
 The `submission/v1` schema does not expose `agent_env`; use a flat experiment or matrix when
 agent/judge credential isolation is required.
 
+### Case C: your model is served by vLLM or a LiteLLM proxy
+
+Use the `litellm/<model-id>` prefix (or `agent_kwargs: {provider_route: litellm}`) and point
+`LITELLM_BASE_URL` at the server; `LITELLM_API_KEY` is optional:
+
+```yaml
+agent: openai-agents                  # OpenAI-compatible root, e.g. vLLM http://host:8000/v1
+model: litellm/qwen3-35b
+```
+
+```yaml
+agent: claude-code-mechanisms         # LiteLLM proxy root with the Anthropic /v1/messages passthrough
+model: litellm/qwen3-35b
+agent_kwargs:
+  mechanisms: all
+```
+
+`cb experiment run` forwards only the LiteLLM pair for this route; the native `ANTHROPIC_API_KEY`
+remains reserved for the judge. See [Harness mechanisms](mechanisms.md#litellm-and-vllm-routing).
+
 ### Which harness supports which provider?
 
 | Harness | OpenAI-direct | OpenRouter | Custom `OPENAI_BASE_URL` | Anthropic / proxy |
 |---|:---:|:---:|:---:|:---:|
-| `openai-agents` | ✅ | ✅ | ✅ | via OpenRouter |
+| `openai-agents` | ✅ | ✅ | ✅ (incl. `litellm/` route) | via OpenRouter |
+| `claude-code-mechanisms` | — | ✅ (Anthropic models) | — | ✅ (incl. LiteLLM `/v1/messages`) |
 | `deepagents` | ✅ | ✅ | ✅ | ✅ |
 | `claude-code` | — | ✅ (Anthropic models) | — | ✅ |
 | `codex-cli` | ✅ | ✅ | ✅ | — |

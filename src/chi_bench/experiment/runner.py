@@ -57,6 +57,7 @@ AGENT_ENV_ALLOWLIST: tuple[str, ...] = (
     "AZURE_OPENAI_API_KEY",
     "AZURE_OPENAI_ENDPOINT",
     "LITELLM_API_KEY",
+    "LITELLM_BASE_URL",
     # Per-harness toggles (forwarded only when set in env; the runner also
     # injects GEMINI_CLI_TRUST_WORKSPACE=true by default for the gemini-cli
     # agent below — listing it here lets a user-set override pass through
@@ -88,11 +89,19 @@ def _selected_agent_env(cfg: ExperimentConfig, env: Mapping[str, str]) -> dict[s
         vendor = (
             model or ("openai/" if agent in ("openai-agents", "codex") else "anthropic/")
         ).partition("/")[0]
-        if agent == "claude-code":
+        route = cfg.agent_kwargs.get("provider_route")
+        uses_litellm = route == "litellm" or vendor == "litellm"
+        if agent.startswith("claude-code"):
+            # claude-code, claude-code-cli and claude-code-mechanisms share the
+            # Anthropic credential set; a LiteLLM proxy adds its own pair.
             selected.update(("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN"))
+            if uses_litellm:
+                selected.update(("LITELLM_API_KEY", "LITELLM_BASE_URL"))
         elif agent == "openai-agents":
-            if cfg.agent_kwargs.get("provider_route") == "tinker" or vendor == "thinkingmachines":
+            if route == "tinker" or vendor == "thinkingmachines":
                 selected.add("TINKER_API_KEY")
+            elif uses_litellm:
+                selected.update(("LITELLM_API_KEY", "LITELLM_BASE_URL"))
             elif env.get("OPENAI_BASE_URL") or vendor == "openai" or (model and "/" not in model):
                 selected.update(("OPENAI_API_KEY", "OPENAI_BASE_URL"))
             else:

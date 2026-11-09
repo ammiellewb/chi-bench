@@ -34,6 +34,20 @@ from pathlib import Path
 from typing import Any
 
 from chi_bench.experiment.agents.nemotron_tool_protocol import NEMOTRON_ULTRA_256K_MODEL
+from chi_bench.experiment.agents.openai_agents_resilience import (
+    DEFAULT_HANDBOOK_ROOT,
+    DEFAULT_PROGRESS_TOOLS,
+    DEFAULT_STATE_DIR,
+    STAGES_FILE,
+    MechanismGate,
+    NudgePolicy,
+    ResilientModel,
+    ResilientModelProvider,
+    StageLog,
+    ToolCallRewrite,
+    ToolGuard,
+    parse_tool_list,
+)
 
 logger = logging.getLogger("openai_agents_runner")
 
@@ -298,6 +312,16 @@ def _install_oversize_output_patch(logs_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 _SAFE_TOOL_NAME_PATTERN = re.compile(r"[^a-zA-Z0-9_-]")
 
+# Set once per runner process by ``run_agent`` before the MCP tool list is
+# converted; the sanitizer patch below wraps every MCP FunctionTool with it so
+# tool failures, mechanism gates, and stage timing cover MCP calls too.
+_ACTIVE_TOOL_GUARD: ToolGuard | None = None
+
+
+def _set_active_tool_guard(guard: ToolGuard | None) -> None:
+    global _ACTIVE_TOOL_GUARD
+    _ACTIVE_TOOL_GUARD = guard
+
 
 def _install_mcp_tool_name_sanitizer() -> None:
     try:
@@ -319,6 +343,9 @@ def _install_mcp_tool_name_sanitizer() -> None:
         safe = _SAFE_TOOL_NAME_PATTERN.sub("__", function_tool.name)
         if safe != function_tool.name:
             function_tool.name = safe
+        function_tool._chi_bench_mcp_name = tool.name
+        if _ACTIVE_TOOL_GUARD is not None:
+            _ACTIVE_TOOL_GUARD.wrap(function_tool, mcp_name=tool.name)
         return function_tool
 
     MCPUtil.to_function_tool = classmethod(patched_to_function_tool)
@@ -346,6 +373,7 @@ def _dump_trace(
     system_prompt: str,
     result: Any,
     model: str,
+    rewrites: dict[str, ToolCallRewrite] | None = None,
 ) -> None:
     records: list[dict[str, Any]] = []
     records.append({"role": "system", "content": system_prompt})
@@ -363,7 +391,9 @@ def _dump_trace(
             response_for_item[id(out)] = resp
 
     for item in new_items:
-        record = _item_to_record(item, response_for_item, default_model=model)
+        record = _item_to_record(
+            item, response_for_item, default_model=model, rewrites=rewrites or {}
+        )
         if record is not None:
             records.append(record)
 
@@ -375,7 +405,11 @@ def _dump_trace(
 
 
 def _item_to_record(
-    item: Any, response_for_item: dict[int, Any], *, default_model: str
+    item: Any,
+    response_for_item: dict[int, Any],
+    *,
+    default_model: str,
+    rewrites: dict[str, ToolCallRewrite] | None = None,
 ) -> dict[str, Any] | None:
     raw = getattr(item, "raw_item", None)
     if raw is None:
@@ -412,17 +446,24 @@ def _item_to_record(
         call_id = getattr(raw, "call_id", None) or getattr(raw, "id", None)
         name = getattr(raw, "name", None) or "unknown_tool"
         arguments_raw = getattr(raw, "arguments", None)
+        tool_call: dict[str, Any] = {"id": call_id, "name": name}
+        # The trace shows what the model asked for; the SDK may have executed
+        # a resolved alias or the unknown-tool sink instead.
+        rewrite = (rewrites or {}).get(str(call_id))
+        if rewrite is not None and rewrite.unresolved:
+            tool_call["name"] = rewrite.requested
+            tool_call["unresolved_tool"] = True
+            arguments_raw = rewrite.arguments
+        elif rewrite is not None:
+            tool_call["requested_name"] = rewrite.requested
         try:
             arguments = (
                 json.loads(arguments_raw) if isinstance(arguments_raw, str) else arguments_raw
             )
         except (TypeError, ValueError):
             arguments = {"_raw": arguments_raw}
-        return {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [{"id": call_id, "name": name, "arguments": arguments}],
-        }
+        tool_call["arguments"] = arguments
+        return {"role": "assistant", "content": "", "tool_calls": [tool_call]}
 
     if item_type == "ToolCallOutputItem":
         call_id = getattr(raw, "call_id", None)
@@ -513,6 +554,8 @@ def write_result(
     final_output: str | None,
     model: str,
     error: str | None,
+    stages: dict[str, Any] | None = None,
+    partial_usage: dict[str, int] | None = None,
 ) -> None:
     logs_dir.mkdir(parents=True, exist_ok=True)
     if error:
@@ -527,6 +570,13 @@ def write_result(
         "model": model,
         "error": error,
     }
+    if stages is not None:
+        result["stages"] = stages
+    if error and partial_usage is not None:
+        # Known spend from the model calls that completed before the failure.
+        # Kept separate from the null totals above, which aggregation treats
+        # as unknown rather than free.
+        result["partial_usage"] = partial_usage
     (logs_dir / "run_result.json").write_text(json.dumps(result, indent=2))
 
 
@@ -645,12 +695,26 @@ def _build_model_settings(
     return ModelSettings(**kwargs)
 
 
+def _env_int(name: str, default: int = 0) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("Ignoring non-integer %s=%r", name, raw)
+        return default
+
+
 async def run_agent(instruction: str, mcp_url: str, logs_dir: Path = DEFAULT_LOGS_DIR) -> None:
     """Create an Agent connected to the chi_bench MCP server and run the task."""
     from agents import Agent, MultiProvider, RunConfig, Runner, set_tracing_disabled
     from agents.mcp import MCPServerStreamableHttp
 
-    from chi_bench.experiment.agents.openai_agents_local_tools import build_local_tools
+    from chi_bench.experiment.agents.openai_agents_local_tools import (
+        build_local_tools,
+        build_unknown_tool_sink,
+    )
 
     set_tracing_disabled(True)
 
@@ -660,9 +724,40 @@ async def run_agent(instruction: str, mcp_url: str, logs_dir: Path = DEFAULT_LOG
     reasoning_effort = os.environ.get("OPENAI_AGENTS_REASONING_EFFORT")
     is_tinker_chat = _is_tinker_chat_route(api_mode)
 
+    # Resilience layer (see openai_agents_resilience): stage timing is always
+    # on; mechanisms and nudges are opt-in via the harness kwargs so an empty
+    # configuration is the exact pre-existing baseline prompt and tool set.
+    mechanisms_spec = os.environ.get("OPENAI_AGENTS_MECHANISMS") or None
+    state_dir = os.environ.get("CHI_BENCH_MECH_STATE_DIR") or DEFAULT_STATE_DIR
+    handbook_root = os.environ.get("CHI_BENCH_MECH_HANDBOOK_ROOT") or DEFAULT_HANDBOOK_ROOT
+    stages = StageLog(logs_dir / STAGES_FILE)
+    rewrites: dict[str, ToolCallRewrite] = {}
+    gate = (
+        MechanismGate.from_state_dir(state_dir, handbook_root=handbook_root)
+        if mechanisms_spec
+        else None
+    )
+    guard = ToolGuard(stages=stages, gate=gate)
+    nudges = NudgePolicy(
+        max_turns=max_turns,
+        progress_nudge_turn=_env_int("OPENAI_AGENTS_PROGRESS_NUDGE_TURN"),
+        turn_budget_warning=_env_int("OPENAI_AGENTS_TURN_BUDGET_WARNING"),
+        progress_tools=parse_tool_list(
+            os.environ.get("OPENAI_AGENTS_PROGRESS_TOOLS"), DEFAULT_PROGRESS_TOOLS
+        ),
+    )
+
     _install_oversize_output_patch(logs_dir)
     _install_mcp_tool_name_sanitizer()
-    local_tools = build_local_tools(logs_dir)
+    _set_active_tool_guard(guard)
+    local_tools = [guard.wrap(tool) for tool in build_local_tools(logs_dir)]
+    local_tools.append(guard.wrap(build_unknown_tool_sink()))
+    instructions = SYSTEM_PROMPT
+    if gate is not None:
+        instructions = f"{SYSTEM_PROMPT}\n\n{gate.prompt()}"
+
+    def _wrap_model(inner: Any) -> ResilientModel:
+        return ResilientModel(inner, stages=stages, rewrites=rewrites, nudges=nudges)
 
     # Allow vendor-prefixed model ids (anthropic/..., google/..., x-ai/...,
     # deepseek/...) to fall through to the OpenAI provider with the original
@@ -671,12 +766,14 @@ async def run_agent(instruction: str, mcp_url: str, logs_dir: Path = DEFAULT_LOG
     # MultiProvider raises ``UserError: Unknown prefix: anthropic`` on the
     # first turn. The OpenAI provider itself uses OPENAI_BASE_URL +
     # OPENAI_API_KEY, so OpenRouter just needs those env vars set.
-    run_config = RunConfig(
-        model_provider=MultiProvider(
+    provider = ResilientModelProvider(
+        MultiProvider(
             unknown_prefix_mode="model_id",
             openai_use_responses=api_mode == "responses",
-        )
+        ),
+        wrap=_wrap_model,
     )
+    run_config = RunConfig(model_provider=provider)
 
     async with (
         MCPServerStreamableHttp(
@@ -686,12 +783,16 @@ async def run_agent(instruction: str, mcp_url: str, logs_dir: Path = DEFAULT_LOG
         ) as mcp_server,
         _agent_model_context(model, api_mode) as agent_model,
     ):
+        if not isinstance(agent_model, str):
+            # Explicit Tinker model instance: serve it through the provider so
+            # it is wrapped like every other model and the Agent keeps the id.
+            provider.override_model = agent_model
         agent = Agent(
             name="chi_bench-agent",
-            instructions=SYSTEM_PROMPT,
+            instructions=instructions,
             mcp_servers=[mcp_server],
             tools=local_tools,
-            model=agent_model,
+            model=model,
             model_settings=_build_model_settings(
                 reasoning_effort,
                 separate_reasoning=is_tinker_chat,
@@ -701,6 +802,11 @@ async def run_agent(instruction: str, mcp_url: str, logs_dir: Path = DEFAULT_LOG
         print(f"Running agent with model={model}, max_turns={max_turns}")
         print(f"MCP server: {mcp_url}")
         print(f"Instruction length: {len(instruction)} chars")
+        print(
+            f"Mechanisms: {','.join(gate.names) if gate else '<none>'}; "
+            f"progress_nudge_turn={nudges.progress_nudge_turn}; "
+            f"turn_budget_warning={nudges.turn_budget_warning}"
+        )
         print("---")
 
         error: str | None = None
@@ -742,6 +848,8 @@ async def run_agent(instruction: str, mcp_url: str, logs_dir: Path = DEFAULT_LOG
             final_output=final_output,
             model=model,
             error=error,
+            stages=stages.summary(),
+            partial_usage=stages.partial_usage() if error else None,
         )
         if final_output:
             (logs_dir / "run_output.txt").write_text(final_output)
@@ -751,9 +859,10 @@ async def run_agent(instruction: str, mcp_url: str, logs_dir: Path = DEFAULT_LOG
                 _dump_trace(
                     trace_path=logs_dir / "trace.jsonl",
                     instruction=instruction,
-                    system_prompt=SYSTEM_PROMPT,
+                    system_prompt=instructions,
                     result=result,
                     model=model,
+                    rewrites=rewrites,
                 )
             except Exception as exc:
                 logger.warning("Failed to dump conversation trace: %s", exc)

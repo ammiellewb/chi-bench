@@ -51,6 +51,8 @@ AGENT_ENV_VARS: dict[str, tuple[str, ...]] = {
         "OPENAI_API_KEY",
         "OPENROUTER_API_KEY",
         "TINKER_API_KEY",
+        "LITELLM_API_KEY",
+        "LITELLM_BASE_URL",
         "OPENAI_BASE_URL",
     ),
     "deepagents": (
@@ -71,6 +73,8 @@ AGENT_ENV_VARS: dict[str, tuple[str, ...]] = {
         "ANTHROPIC_API_KEY",
         "CLAUDE_CODE_OAUTH_TOKEN",
         "ANTHROPIC_BASE_URL",
+        "LITELLM_API_KEY",
+        "LITELLM_BASE_URL",
     ),
     "claude-code": ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_BASE_URL"),
     "codex": ("OPENAI_API_KEY",),

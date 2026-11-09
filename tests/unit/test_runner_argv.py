@@ -239,3 +239,48 @@ def test_prepare_dataset_mirrors_tasks_with_environment_stubs(tmp_path):
         assert (mirrored_task / "fixtures" / "manifest.json").read_text() == "{}"
         assert not (src / "cm_a" / "environment").exists()
     assert not Path(mirrored).exists()
+
+
+def test_litellm_route_forwards_proxy_credentials_only(tmp_path):
+    env = {
+        "LITELLM_BASE_URL": "http://gpubox:4000/v1",
+        "LITELLM_API_KEY": "proxy-key",
+        "OPENROUTER_API_KEY": "router-key",
+        "ANTHROPIC_API_KEY": "judge-key",
+    }
+    cfg = ExperimentConfig(dataset=str(tmp_path), agent="openai-agents", model="litellm/qwen3")
+    cmd = _build_harbor_command(cfg, env=env)
+    pairs = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "--ae"]
+    assert (
+        "LITELLM_BASE_URL=http://gpubox:4000/v1" in pairs and "LITELLM_API_KEY=proxy-key" in pairs
+    )
+    assert not any(p.startswith(("OPENROUTER_API_KEY=", "ANTHROPIC_API_KEY=")) for p in pairs)
+
+    cfg = ExperimentConfig(
+        dataset=str(tmp_path),
+        agent="openai-agents",
+        model="google/gemma-4-12b",
+        agent_kwargs={"provider_route": "litellm"},
+    )
+    cmd = _build_harbor_command(cfg, env=env)
+    pairs = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "--ae"]
+    assert "LITELLM_API_KEY=proxy-key" in pairs
+    assert not any(p.startswith("OPENROUTER_API_KEY=") for p in pairs)
+
+
+def test_claude_code_mechanisms_litellm_route_adds_proxy_pair(tmp_path):
+    env = {
+        "LITELLM_BASE_URL": "http://gpubox:4000",
+        "LITELLM_API_KEY": "proxy-key",
+        "ANTHROPIC_API_KEY": "native-key",
+        "OPENAI_API_KEY": "openai-key",
+    }
+    cfg = ExperimentConfig(
+        dataset=str(tmp_path), agent="claude-code-mechanisms", model="litellm/qwen3"
+    )
+    cmd = _build_harbor_command(cfg, env=env)
+    pairs = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "--ae"]
+    assert (
+        "LITELLM_BASE_URL=http://gpubox:4000" in pairs and "ANTHROPIC_API_KEY=native-key" in pairs
+    )
+    assert not any(p.startswith("OPENAI_API_KEY=") for p in pairs)

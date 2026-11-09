@@ -13,6 +13,10 @@ consent_gate`` or ``all``; empty = exact baseline):
    user-supplied ``skills_dir``.
 3. The composed mechanism prompt is appended via ``--append-system-prompt``
    (shell-quoted, merged with a user ``append_system_prompt`` kwarg).
+4. ``provider_route: litellm`` (or a ``litellm/<id>`` model) points Claude Code
+   at a LiteLLM proxy's Anthropic-compatible ``/v1/messages`` endpoint
+   (``LITELLM_BASE_URL`` / ``LITELLM_API_KEY``), so open-weight models served
+   by vLLM behind LiteLLM run the same mechanisms as Anthropic models.
 
 Example matrix rows::
 
@@ -23,6 +27,7 @@ Example matrix rows::
 
 from __future__ import annotations
 
+import os
 import shlex
 import tempfile
 from pathlib import Path
@@ -46,6 +51,7 @@ _CLAUDE_CONFIG_DIR = (EnvironmentPaths.agent_dir / "sessions").as_posix()
 
 STATE_DIR_ENV = "CHI_BENCH_MECH_STATE_DIR"
 HANDBOOK_ROOT_ENV = "CHI_BENCH_MECH_HANDBOOK_ROOT"
+LITELLM_MODEL_PREFIX = "litellm/"
 
 
 class ClaudeCodeMechanismsHarness(ClaudeCode):
@@ -66,12 +72,42 @@ class ClaudeCodeMechanismsHarness(ClaudeCode):
         logs_dir: Path,
         mechanisms: str | None = None,
         append_system_prompt: str | None = None,
+        provider_route: str | None = None,
         *args,
         **kwargs,
     ):
         self.mechanisms: list[Mechanism] = resolve_mechanisms(mechanisms)
         self._user_system_prompt = append_system_prompt or ""
+        self.provider_route = provider_route
         super().__init__(logs_dir, *args, **kwargs)
+        self._apply_litellm_route()
+
+    def _apply_litellm_route(self) -> None:
+        """Route Claude Code through a LiteLLM proxy when requested.
+
+        Harbor's ``ClaudeCode.run`` reads the base URL from ``os.environ`` and
+        the key through ``_get_env`` (``extra_env`` first); with a custom base
+        URL it keeps the model id verbatim and pins every model alias to it.
+        """
+        model = self.model_name or ""
+        wants_litellm = self.provider_route == "litellm" or model.startswith(LITELLM_MODEL_PREFIX)
+        if not wants_litellm:
+            if self.provider_route not in (None, "", "auto"):
+                raise ValueError(
+                    f"unknown provider_route {self.provider_route!r}; choose 'auto' or 'litellm'"
+                )
+            return
+        base = (self._get_env("LITELLM_BASE_URL") or "").strip()
+        if not base:
+            raise RuntimeError(
+                f"Model {model!r} requires LiteLLM routing, but LITELLM_BASE_URL is not set."
+            )
+        os.environ["ANTHROPIC_BASE_URL"] = base
+        self._extra_env["ANTHROPIC_BASE_URL"] = base
+        self._extra_env["ANTHROPIC_API_KEY"] = self._get_env("LITELLM_API_KEY") or "litellm"
+        if model.startswith(LITELLM_MODEL_PREFIX):
+            self.model_name = model[len(LITELLM_MODEL_PREFIX) :]
+            self._init_model_info()
 
     @staticmethod
     def name() -> str:

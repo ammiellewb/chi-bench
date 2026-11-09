@@ -18,6 +18,7 @@ use), ``criteria_ledger`` → idea 3 (reasoning separated from execution),
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -230,6 +231,25 @@ def compose_prompt(
     return "\n\n".join(parts)
 
 
+_FRONTMATTER_RE = re.compile(r"^---\n.*?\n---\n", re.DOTALL)
+
+
+def compose_bundle_prompt(
+    mechanisms: list[Mechanism],
+    *,
+    state_dir: str = DEFAULT_STATE_DIR,
+    handbook_root: str = DEFAULT_HANDBOOK_ROOT,
+) -> str:
+    """Mechanism prompt plus each skill body inlined as a ``### Skill:`` section."""
+    parts = [compose_prompt(mechanisms, state_dir=state_dir, handbook_root=handbook_root)]
+    for mech in mechanisms:
+        for rel_path, content in mech.skills.items():
+            body = content.format(state=state_dir, handbook=handbook_root)
+            body = _FRONTMATTER_RE.sub("", body, count=1).strip()
+            parts.append(f"### Skill: {rel_path.split('/')[0]}\n{body}")
+    return "\n\n".join(part for part in parts if part)
+
+
 def _hook_command(bin_dir: str, script: str) -> str:
     return f"python3 -I {bin_dir}/{script}"
 
@@ -295,6 +315,9 @@ def write_bundle(
             )
     settings = build_settings(mechanisms, state_dir=state_dir)
     (dest / "settings.json").write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+    # Harnesses without a skill loader (openai-agents) append this verbatim.
+    prompt = compose_bundle_prompt(mechanisms, state_dir=state_dir, handbook_root=handbook_root)
+    (dest / "prompt.md").write_text(prompt + "\n", encoding="utf-8")
     manifest = {
         "mechanisms": [m.name for m in mechanisms],
         "state_dir": state_dir,

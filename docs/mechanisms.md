@@ -5,6 +5,8 @@ independently toggleable components. Each component is a **system-prompt fragmen
 **Claude Code tool hooks** (stdlib Python scripts uploaded into the agent container), and
 optionally a **skill**. With no mechanisms selected the harness is byte-for-byte the baseline
 command, so A/B arms share one harness class and differ only by the listed component.
+The same mechanisms also run on `openai-agents` for any OpenAI-compatible model; see
+[Running on `openai-agents`](#running-on-openai-agents).
 
 | Mechanism | Plan idea | What it enforces | Hooks |
 |---|---|---|---|
@@ -62,6 +64,80 @@ Pair it with `scripts/aggregate.py` for pass@k and cost. Denies per trial and to
 trial are the first things to read: a gate that fires often but does not move the reward is
 costing turns, and the paper's timeout share (7.6 %) is the budget it eats into.
 
+## Running on `openai-agents`
+
+The same four mechanisms run on the `openai-agents` harness for any OpenAI-compatible model
+(vLLM, a LiteLLM proxy, OpenRouter, OpenAI direct), so Qwen and Gemma arms can be compared with
+the Claude Code arms on identical gates:
+
+```yaml
+agent: openai-agents
+model: litellm/qwen3-35b            # any id served by LITELLM_BASE_URL; see routing below
+agent_kwargs:
+  mechanisms: all                   # same names and semantics as claude-code-mechanisms
+  progress_nudge_turn: 8            # optional: nudge if no state-changing call by turn 8
+  turn_budget_warning: 8            # optional: warn once when 8 turns remain
+```
+
+How it maps onto the OpenAI Agents SDK:
+
+- The harness uploads the identical bundle (`bin/`, `skills/`, `settings.json`, `manifest.json`)
+  plus a `prompt.md` (mechanism prompt with the skills inlined, since the SDK has no skill
+  loader). The runner appends `prompt.md` to the Toolathlon system prompt.
+- The runner reads `settings.json` and runs each hook script with `python -I` around every tool
+  call, exactly as Claude Code would. A PreToolUse exit 2 returns
+  `[blocked by <mechanism>] <reason>` as the tool result without executing the call; PostToolUse
+  `decision: block` reasons and `additionalContext` are appended to the tool result.
+- Hooks see MCP tools as `mcp__chi_bench__<ns.method>` and the local tools under their Claude
+  Code names (`local-fs-read` → `Read` with `file_path`, `local-bash` → `Bash`, …), so the
+  policy-read observer and the `policy_locate.py` flow work unchanged.
+- Everything lands in the same `trials/<name>/agent/mechanisms/` layout, so
+  `scripts/mechanisms_report.py` summarizes both harnesses side by side.
+
+The opt-in nudges target the harness failures seen in the Qwen/Gemma runs (36 PA trials that never
+created a case; 3 trials at the 50-turn cap): `progress_nudge_turn` injects one user-role
+`[harness notice]` when no tool in `OPENAI_AGENTS_PROGRESS_TOOLS` (default: the case/intake/outreach
+entry points and decision calls) has been called by turn N, and `turn_budget_warning` injects one
+when N turns remain. Both are off unless set, so an unset row is the exact baseline.
+
+## Harness resilience in `openai-agents` (always on)
+
+`src/chi_bench/experiment/agents/openai_agents_resilience.py` wraps the SDK model and every tool
+regardless of mechanisms. It changes nothing the model sees (same prompt, same tool list) unless
+the model misbehaves:
+
+| Failure in earlier runs | Behaviour now |
+|---|---|
+| Model calls `local_fs_read` / `chart.get_patient` for `local-fs-read` / `chart__get_patient`; SDK raises `ModelBehaviorError` and the trial aborts (33 of 100 Qwen/Gemma trials) | Separator variants resolve to the registered tool; the call executes. The trace records `requested_name`. |
+| Model invents a tool that does not exist | The call is routed to a hidden sink and the model receives `ERROR: tool '<name>' does not exist … Did you mean …` as the tool result; the run continues. The trace shows the invented name with `unresolved_tool: true`. |
+| Invalid JSON arguments or an exception inside a tool (`UserError`, MCP transport error) ends the run | The tool returns `ERROR: tool '<name>' failed: …` to the model. |
+| 900 s `AgentTimeoutError` leaves no per-stage data | `agent/stages.jsonl` is appended per model call and per tool call as they happen (latency, tokens, errors, blocks, nudges). `run_result.json` gains `stages` (totals and the five slowest tools) and, on an exception, `partial_usage` for the model calls that completed. |
+
+Read `stages.jsonl` before raising limits: a long `model_sec` with few `tool_calls` is a slow model;
+many short model calls with repeated `tool_errors` is a stuck loop.
+
+## LiteLLM and vLLM routing
+
+Both harnesses accept a `litellm/<model-id>` model (or `agent_kwargs: {provider_route: litellm}`
+with any id) and read two host variables:
+
+```bash
+LITELLM_BASE_URL=http://gpubox:8000/v1   # openai-agents: any OpenAI-compatible root (vLLM works directly)
+LITELLM_API_KEY=sk-...                   # optional; "litellm" is sent when unset
+```
+
+- `openai-agents` forwards them as `OPENAI_BASE_URL` / `OPENAI_API_KEY`, strips the `litellm/`
+  prefix, and defaults to Chat Completions (`api_mode: responses` overrides when the server
+  supports it). `cb experiment run` forwards only the LiteLLM pair for this route, not
+  `OPENROUTER_API_KEY`.
+- `claude-code-mechanisms` sets `ANTHROPIC_BASE_URL` to `LITELLM_BASE_URL`, which must be a
+  LiteLLM proxy root exposing the Anthropic-format `/v1/messages` endpoint, and sends
+  `LITELLM_API_KEY` as the agent's `ANTHROPIC_API_KEY`. Harbor keeps the model id verbatim and
+  pins every Claude Code model alias to it. The native `ANTHROPIC_API_KEY` is untouched for the
+  judge.
+
+The routing is unit-tested; neither harness has yet been run live against a LiteLLM proxy.
+
 ## How it is wired
 
 - `src/chi_bench/experiment/agents/mechanisms/components.py` — the registry
@@ -72,6 +148,12 @@ costing turns, and the paper's timeout share (7.6 %) is the budget it eats into.
   `hookSpecificOutput.additionalContext` (no prompt).
 - `src/chi_bench/experiment/agents/claude_code_mechanisms_harness.py` — uploads the bundle,
   writes `$CLAUDE_CONFIG_DIR/settings.json`, copies skills, appends the composed prompt.
+- `src/chi_bench/experiment/agents/openai_agents_harness.py` — same upload for `openai-agents`;
+  forwards `OPENAI_AGENTS_MECHANISMS` and the nudge settings to the runner.
+- `src/chi_bench/experiment/agents/openai_agents_resilience.py` — runner-side model wrapper,
+  tool guard, stage log, nudges, and the in-process `MechanismGate`. It is baked into
+  `chi-bench:agent` next to the runner and imports no other chi-bench module, so the agent
+  image's closed source set stays closed.
 
 Claude Code sanitizes dotted MCP tool names, so hooks see `mcp__healthverse__cm_intake_open_case`; the matcher accepts `.`, `_`, `__` and `-` between namespace and method. Hooks match native MCP names and the mcporter CLI form
 (`Bash` running `npx mcporter call <alias> ns.method`), so the scripts also work if the

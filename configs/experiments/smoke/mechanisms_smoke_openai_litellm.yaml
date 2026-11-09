@@ -1,0 +1,22 @@
+# One-task smoke of the four mechanisms on the openai-agents harness against an
+# OpenAI-compatible server (vLLM directly, or a LiteLLM proxy). Set in .env:
+#   LITELLM_BASE_URL=http://gpubox:8000/v1
+#   LITELLM_API_KEY=...            # optional
+# Validates: bundle upload, in-process hook gating, prompt.md injection,
+# tool-name resilience (stages.jsonl), and the progress / turn-budget nudges.
+environment: docker
+env_file: .env
+concurrency: 1
+n_attempts: 1
+max_retries: 0
+agent: openai-agents
+model: litellm/qwen3-35b
+dataset: data/prior_auth_um/tasks
+registry_path: data/prior_auth_um/registry.json
+n_tasks: 1
+agent_kwargs:
+  mechanisms: all
+  max_turns: "80"
+  progress_nudge_turn: "8"
+  turn_budget_warning: "10"
+trials_dir: logs/experiments/smoke/mechanisms_smoke_openai_litellm

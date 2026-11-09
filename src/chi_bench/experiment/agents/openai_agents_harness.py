@@ -6,10 +6,17 @@ import json
 import logging
 import os
 import shlex
+import tempfile
 from collections.abc import Mapping
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from harbor.agents.installed.base import BaseInstalledAgent, CliFlag, with_prompt_template
+from harbor.agents.installed.base import (
+    BaseInstalledAgent,
+    CliFlag,
+    EnvVar,
+    with_prompt_template,
+)
 from harbor.models.trajectories.agent import Agent
 from harbor.models.trajectories.final_metrics import FinalMetrics
 from harbor.models.trajectories.metrics import Metrics
@@ -18,6 +25,13 @@ from harbor.models.trajectories.observation_result import ObservationResult
 from harbor.models.trajectories.step import Step
 from harbor.models.trajectories.tool_call import ToolCall
 from harbor.models.trajectories.trajectory import Trajectory
+
+from chi_bench.experiment.agents.mechanisms import (
+    DEFAULT_HANDBOOK_ROOT,
+    DEFAULT_STATE_DIR,
+    resolve_mechanisms,
+    write_bundle,
+)
 
 if TYPE_CHECKING:
     from harbor.environments.base import BaseEnvironment
@@ -35,9 +49,22 @@ logger = logging.getLogger(__name__)
 _PROVIDER_PREFLIGHT_KEYS: tuple[str, ...] = (
     "OPENROUTER_API_KEY",
     "TINKER_API_KEY",
+    "LITELLM_API_KEY",
+    "LITELLM_BASE_URL",
     "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",
     "GEMINI_API_KEY",
+)
+
+LITELLM_MODEL_PREFIX = "litellm/"
+STATE_DIR_ENV = "CHI_BENCH_MECH_STATE_DIR"
+HANDBOOK_ROOT_ENV = "CHI_BENCH_MECH_HANDBOOK_ROOT"
+
+# (resolved flag kwarg, runner env var) for the opt-in nudges.
+_NUDGE_FLAG_ENV: tuple[tuple[str, str], ...] = (
+    ("progress_nudge_turn", "OPENAI_AGENTS_PROGRESS_NUDGE_TURN"),
+    ("turn_budget_warning", "OPENAI_AGENTS_TURN_BUDGET_WARNING"),
+    ("progress_tools", "OPENAI_AGENTS_PROGRESS_TOOLS"),
 )
 
 
@@ -77,8 +104,34 @@ class OpenAIAgentsHarness(BaseInstalledAgent):
             "provider_route",
             cli="--provider-route",
             type="enum",
-            choices=["auto", "tinker"],
+            choices=["auto", "tinker", "litellm"],
             env_fallback="OPENAI_AGENTS_PROVIDER_ROUTE",
+        ),
+        # Opt-in harness mechanisms (same hook scripts as claude-code-mechanisms)
+        # and mid-run nudges. Unset = exact baseline prompt and tool set.
+        CliFlag(
+            "mechanisms",
+            cli="--mechanisms",
+            type="str",
+            env_fallback="OPENAI_AGENTS_MECHANISMS",
+        ),
+        CliFlag(
+            "progress_nudge_turn",
+            cli="--progress-nudge-turn",
+            type="int",
+            env_fallback="OPENAI_AGENTS_PROGRESS_NUDGE_TURN",
+        ),
+        CliFlag(
+            "turn_budget_warning",
+            cli="--turn-budget-warning",
+            type="int",
+            env_fallback="OPENAI_AGENTS_TURN_BUDGET_WARNING",
+        ),
+        CliFlag(
+            "progress_tools",
+            cli="--progress-tools",
+            type="str",
+            env_fallback="OPENAI_AGENTS_PROGRESS_TOOLS",
         ),
         CliFlag(
             "api_mode",
@@ -95,6 +148,21 @@ class OpenAIAgentsHarness(BaseInstalledAgent):
             env_fallback="OPENAI_AGENTS_REASONING_EFFORT",
         ),
     ]
+
+    ENV_VARS = [
+        EnvVar("mechanisms_state_dir", env=STATE_DIR_ENV, default=DEFAULT_STATE_DIR),
+        EnvVar("handbook_root", env=HANDBOOK_ROOT_ENV, default=DEFAULT_HANDBOOK_ROOT),
+        # Optional overrides of the gated tool sets (comma-separated ns.method).
+        EnvVar("preflight_tools", env="CHI_BENCH_MECH_PREFLIGHT_TOOLS"),
+        EnvVar("policy_tools", env="CHI_BENCH_MECH_POLICY_TOOLS"),
+        EnvVar("ledger_tools", env="CHI_BENCH_MECH_LEDGER_TOOLS"),
+    ]
+
+    def __init__(self, logs_dir: Path, *args, **kwargs):
+        super().__init__(logs_dir, *args, **kwargs)
+        # Fail fast on a mistyped mechanism name instead of silently running
+        # the baseline arm.
+        self.mechanisms = resolve_mechanisms(self._resolved_flags.get("mechanisms"))
 
     @staticmethod
     def name() -> str:
@@ -119,6 +187,13 @@ class OpenAIAgentsHarness(BaseInstalledAgent):
         route forwards ``TINKER_API_KEY`` as ``OPENAI_API_KEY``, sets the
         Tinker base URL, preserves the model id verbatim, and takes precedence
         over a host ``OPENAI_BASE_URL``.
+
+        An explicit ``provider_route="litellm"`` or a ``litellm/<id>`` model
+        selects a LiteLLM proxy (or any OpenAI-compatible server such as
+        vLLM): ``LITELLM_BASE_URL`` becomes ``OPENAI_BASE_URL``,
+        ``LITELLM_API_KEY`` (optional) becomes ``OPENAI_API_KEY``, the
+        ``litellm/`` prefix is stripped, and the API mode defaults to Chat
+        Completions. Also takes precedence over a host ``OPENAI_BASE_URL``.
 
         Otherwise, a host ``OPENAI_BASE_URL`` is treated as an explicit
         override. When it is absent, the auto-routing rules are:
@@ -151,6 +226,25 @@ class OpenAIAgentsHarness(BaseInstalledAgent):
             env["OPENAI_API_KEY"] = tinker_key
             env["OPENAI_BASE_URL"] = cls.TINKER_BASE_URL
             env["OPENAI_AGENTS_MODEL"] = model_name
+            env["OPENAI_AGENTS_API_MODE"] = "chat_completions"
+            return env
+
+        if provider_route == "litellm" or model_name.startswith(LITELLM_MODEL_PREFIX):
+            litellm_base = (host_env.get("LITELLM_BASE_URL") or "").strip()
+            if not litellm_base:
+                raise RuntimeError(
+                    f"Model {model_name!r} requires LiteLLM routing, but "
+                    "LITELLM_BASE_URL is not set in the host environment."
+                )
+            # OpenAI-compatible servers without auth still need a non-empty
+            # key for the SDK client; LiteLLM's own virtual keys pass through.
+            env["OPENAI_API_KEY"] = host_env.get("LITELLM_API_KEY") or "litellm"
+            env["OPENAI_BASE_URL"] = litellm_base
+            env["OPENAI_AGENTS_MODEL"] = (
+                model_name[len(LITELLM_MODEL_PREFIX) :]
+                if model_name.startswith(LITELLM_MODEL_PREFIX)
+                else model_name
+            )
             env["OPENAI_AGENTS_API_MODE"] = "chat_completions"
             return env
 
@@ -276,6 +370,15 @@ class OpenAIAgentsHarness(BaseInstalledAgent):
             if reasoning_effort := self._resolved_flags.get("reasoning_effort"):
                 env["OPENAI_AGENTS_REASONING_EFFORT"] = reasoning_effort
 
+            env.update(self.resolve_env_vars())
+            if self.mechanisms:
+                await self._install_mechanisms(environment)
+                env["OPENAI_AGENTS_MECHANISMS"] = ",".join(m.name for m in self.mechanisms)
+            for flag, var in _NUDGE_FLAG_ENV:
+                value = self._resolved_flags.get(flag)
+                if value not in (None, ""):
+                    env[var] = str(value)
+
             escaped = shlex.quote(instruction)
             await self.exec_as_agent(
                 environment,
@@ -290,6 +393,40 @@ class OpenAIAgentsHarness(BaseInstalledAgent):
             )
         finally:
             self._extra_env = saved_extra_env
+
+    # ------------------------------------------------------------------
+    # Mechanisms: upload the same hook bundle claude-code-mechanisms uses.
+    # The runner executes the scripts in-process around every tool call.
+    # ------------------------------------------------------------------
+    @property
+    def state_dir(self) -> str:
+        return self._resolved_env_vars.get(STATE_DIR_ENV, DEFAULT_STATE_DIR)
+
+    @property
+    def handbook_root(self) -> str:
+        return self._resolved_env_vars.get(HANDBOOK_ROOT_ENV, DEFAULT_HANDBOOK_ROOT)
+
+    async def _install_mechanisms(self, environment: BaseEnvironment) -> None:
+        state_dir = self.state_dir
+        with tempfile.TemporaryDirectory(prefix="chi-mech-") as tmp:
+            bundle = write_bundle(
+                self.mechanisms,
+                Path(tmp) / "bundle",
+                state_dir=state_dir,
+                handbook_root=self.handbook_root,
+            )
+            await environment.upload_dir(bundle, state_dir)
+        # The agent user writes ledgers and events next to the uploaded scripts.
+        await self.exec_as_root(
+            environment,
+            command=f"chmod -R a+rwX {shlex.quote(state_dir)}",
+            timeout_sec=20,
+        )
+        logger.info(
+            "chi-bench mechanisms installed for openai-agents: %s (state_dir=%s)",
+            ",".join(m.name for m in self.mechanisms),
+            state_dir,
+        )
 
     # ------------------------------------------------------------------
     # Post-run: read run_result.json + trace.jsonl, populate context, and

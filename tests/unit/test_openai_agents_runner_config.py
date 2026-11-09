@@ -135,6 +135,13 @@ def _install_fake_agents_sdk(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[
     local_tools_module = ModuleType("chi_bench.experiment.agents.openai_agents_local_tools")
     local_tools_module.build_local_tools = lambda _logs_dir: []
 
+    async def _sink(_context: Any, _params: str) -> str:
+        return "sink"
+
+    local_tools_module.build_unknown_tool_sink = lambda: SimpleNamespace(
+        name="chi_bench__unknown_tool_sink", on_invoke_tool=_sink
+    )
+
     nemotron_model_module = ModuleType("chi_bench.experiment.agents.nemotron_tinker_model")
     nemotron_model_module.NemotronTinkerChatCompletionsModel = (
         CapturingNemotronTinkerChatCompletionsModel
@@ -255,19 +262,25 @@ async def test_runner_selects_requested_sdk_api_without_changing_model_id(
     ]
     agent_model = captured["agents"][0]["model"]
     model_settings = captured["model_settings"][0]
+    # The Agent always carries the model id; the resilience provider wraps
+    # whatever model the SDK resolves for it (explicit Tinker instance or
+    # MultiProvider lookup) so tool-name resolution covers every route.
+    assert agent_model == model
+    provider = captured["run_configs"][0]["model_provider"]
     if uses_explicit_tinker_model:
         assert captured["chat_models"], (
             "expected an explicit Tinker Chat Completions model, "
             f"got agent_model={agent_model!r}, model_settings={model_settings!r}"
         )
-        assert agent_model is captured["chat_models"][0]
-        assert agent_model.model == model
-        assert agent_model.openai_client is captured["clients"][0]
-        assert agent_model.openai_client.kwargs == {}
-        assert agent_model.openai_client.api_key == "test-openai-key"
-        assert agent_model.openai_client.base_url.rstrip("/") == TINKER_BASE_URL
-        assert agent_model.openai_client.closed is True
-        hook = agent_model.should_replay_reasoning_content
+        tinker_model = provider.get_model(model).inner
+        assert tinker_model is captured["chat_models"][0]
+        assert tinker_model.model == model
+        assert tinker_model.openai_client is captured["clients"][0]
+        assert tinker_model.openai_client.kwargs == {}
+        assert tinker_model.openai_client.api_key == "test-openai-key"
+        assert tinker_model.openai_client.base_url.rstrip("/") == TINKER_BASE_URL
+        assert tinker_model.openai_client.closed is True
+        hook = tinker_model.should_replay_reasoning_content
         assert hook(
             SimpleNamespace(
                 model=model,
@@ -304,11 +317,11 @@ async def test_runner_selects_requested_sdk_api_without_changing_model_id(
         )
         assert model_settings["extra_body"] == {"separate_reasoning": True}
     else:
-        assert agent_model == model
+        assert provider.override_model is None
         assert captured["chat_models"] == []
         assert "extra_body" not in model_settings
     if uses_nemotron_adapter:
-        assert captured["nemotron_models"] == [agent_model]
+        assert captured["nemotron_models"] == [captured["chat_models"][0]]
     else:
         assert captured["nemotron_models"] == []
 

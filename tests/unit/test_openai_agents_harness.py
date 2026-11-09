@@ -140,7 +140,7 @@ def test_provider_route_flag_is_exposed_to_cli_and_env() -> None:
     flag = flags["provider_route"]
     assert flag.cli == "--provider-route"
     assert flag.type == "enum"
-    assert flag.choices == ["auto", "tinker"]
+    assert flag.choices == ["auto", "tinker", "litellm"]
     assert flag.env_fallback == "OPENAI_AGENTS_PROVIDER_ROUTE"
 
 
@@ -367,3 +367,143 @@ async def test_routing_failure_restores_original_extra_env(
         "OPENAI_BASE_URL": "https://example.invalid/v1",
         "KEEP_ME": "test-value",
     }
+
+
+# ── LiteLLM route + mechanisms forwarding ─────────────────────────────
+
+
+def test_litellm_prefix_routes_to_proxy_and_strips_prefix() -> None:
+    env = OpenAIAgentsHarness._resolve_routing(
+        "litellm/qwen3-35b",
+        {
+            "LITELLM_BASE_URL": "http://gpubox:4000/v1",
+            "LITELLM_API_KEY": "sk-litellm",
+            "OPENAI_BASE_URL": "https://example.invalid/v1",
+            "OPENROUTER_API_KEY": "sk-or",
+        },
+    )
+    assert env == {
+        "OPENAI_API_KEY": "sk-litellm",
+        "OPENAI_BASE_URL": "http://gpubox:4000/v1",
+        "OPENAI_AGENTS_MODEL": "qwen3-35b",
+        "OPENAI_AGENTS_API_MODE": "chat_completions",
+    }
+
+
+def test_explicit_litellm_route_keeps_model_id_and_defaults_key() -> None:
+    env = OpenAIAgentsHarness._resolve_routing(
+        "google/gemma-4-12b",
+        {"LITELLM_BASE_URL": "http://gpubox:8000/v1"},
+        provider_route="litellm",
+    )
+    assert env["OPENAI_AGENTS_MODEL"] == "google/gemma-4-12b"
+    assert env["OPENAI_API_KEY"] == "litellm"
+    assert env["OPENAI_BASE_URL"] == "http://gpubox:8000/v1"
+
+
+def test_litellm_route_requires_base_url() -> None:
+    with pytest.raises(RuntimeError, match="LITELLM_BASE_URL"):
+        OpenAIAgentsHarness._resolve_routing("litellm/qwen3-35b", {})
+
+
+def test_unknown_mechanism_fails_fast(tmp_path) -> None:
+    with pytest.raises(ValueError, match="unknown mechanism"):
+        OpenAIAgentsHarness(logs_dir=tmp_path, model_name="openai/gpt-5.5", mechanisms="prefight")
+
+
+@pytest.mark.asyncio
+async def test_mechanisms_bundle_is_uploaded_and_flags_forwarded(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LITELLM_BASE_URL", "http://gpubox:4000/v1")
+    monkeypatch.delenv("LITELLM_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    harness = OpenAIAgentsHarness(
+        logs_dir=tmp_path,
+        model_name="litellm/qwen3-35b",
+        mcp_servers=[
+            MCPServerConfig(
+                name="chi_bench",
+                transport="streamable-http",
+                url="http://chi-bench-server:8000/mcp",
+            )
+        ],
+        mechanisms="preflight,consent_gate",
+        progress_nudge_turn=8,
+        turn_budget_warning=5,
+        api_mode="responses",
+    )
+    uploads: list[tuple[list[str], str]] = []
+    commands: list[tuple[str, str]] = []
+    captured: dict[str, Any] = {}
+
+    class FakeEnvironment:
+        async def upload_dir(self, source_dir, target_dir: str) -> None:
+            files = sorted(
+                str(p.relative_to(source_dir)) for p in source_dir.rglob("*") if p.is_file()
+            )
+            uploads.append((files, target_dir))
+
+    async def fake_exec_as_root(environment, *, command: str, timeout_sec=None, **_kw):
+        commands.append(("root", command))
+
+    async def fake_exec_as_agent(environment, *, command: str, env: dict[str, str]):
+        captured.update(command=command, env=env)
+
+    monkeypatch.setattr(harness, "exec_as_root", fake_exec_as_root)
+    monkeypatch.setattr(harness, "exec_as_agent", fake_exec_as_agent)
+
+    await harness.run("Complete the task", FakeEnvironment(), AgentContext())
+
+    assert [m.name for m in harness.mechanisms] == ["preflight", "consent_gate"]
+    files, target = uploads[0]
+    assert target == "/logs/agent/mechanisms"
+    assert {"bin/preflight_hook.py", "bin/consent_gate_hook.py", "bin/observe_hook.py"} <= set(
+        files
+    )
+    assert "bin/policy_trace_hook.py" not in files
+    assert commands == [("root", "chmod -R a+rwX /logs/agent/mechanisms")]
+    env = captured["env"]
+    assert env["OPENAI_AGENTS_MECHANISMS"] == "preflight,consent_gate"
+    assert env["CHI_BENCH_MECH_STATE_DIR"] == "/logs/agent/mechanisms"
+    assert env["CHI_BENCH_MECH_HANDBOOK_ROOT"].endswith("managed-care-operations-handbook")
+    assert env["OPENAI_AGENTS_PROGRESS_NUDGE_TURN"] == "8"
+    assert env["OPENAI_AGENTS_TURN_BUDGET_WARNING"] == "5"
+    assert env["OPENAI_AGENTS_MODEL"] == "qwen3-35b"
+    assert env["OPENAI_BASE_URL"] == "http://gpubox:4000/v1"
+    # An explicit api_mode still wins over the LiteLLM chat-completions default.
+    assert env["OPENAI_AGENTS_API_MODE"] == "responses"
+
+
+@pytest.mark.asyncio
+async def test_baseline_run_forwards_no_mechanism_or_nudge_env(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    for var in ("OPENAI_AGENTS_MECHANISMS", "OPENAI_AGENTS_PROGRESS_NUDGE_TURN"):
+        monkeypatch.delenv(var, raising=False)
+    harness = OpenAIAgentsHarness(
+        logs_dir=tmp_path,
+        model_name="openai/gpt-5.5",
+        mcp_servers=[
+            MCPServerConfig(
+                name="chi_bench",
+                transport="streamable-http",
+                url="http://chi-bench-server:8000/mcp",
+            )
+        ],
+    )
+    captured: dict[str, Any] = {}
+
+    async def fake_exec_as_agent(environment, *, command: str, env: dict[str, str]):
+        captured.update(env=env)
+
+    monkeypatch.setattr(harness, "exec_as_agent", fake_exec_as_agent)
+    await harness.run("Complete the task", object(), AgentContext())
+
+    assert harness.mechanisms == []
+    assert not any(
+        k.startswith(("OPENAI_AGENTS_MECH", "OPENAI_AGENTS_PROGRESS", "OPENAI_AGENTS_TURN_B"))
+        for k in captured["env"]
+    )
