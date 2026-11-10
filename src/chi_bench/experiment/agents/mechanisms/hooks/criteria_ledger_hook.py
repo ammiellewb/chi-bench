@@ -25,19 +25,16 @@ MECHANISM = "criteria_ledger"
 LEDGER_FILE = "criteria_ledger.json"
 VALID_MET = {"yes", "no", "unknown"}
 
+# Final decisions only; intermediate saves are not gated (see policy_trace_hook).
 DECISION_TOOLS: tuple[str, ...] = (
     "auth.submit_authorization",
     "auth.finalize_provider_determination",
     "auth.respond_to_pend",
     "auth.file_appeal",
     "auth.file_external_appeal",
-    "triage.set_disposition",
-    "review.save_criteria_evaluation",
     "review.submit_nurse_case_recommendation",
-    "review.save_md_review",
     "review.submit_md_case_decision",
     "determination.finalize",
-    "cm_care_plan.save_care_plan",
     "cm_care_plan.finalize",
 )
 

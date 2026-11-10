@@ -468,3 +468,191 @@ def test_resilience_constants_mirror_mechanisms_package() -> None:
     assert res.DEFAULT_STATE_DIR == mechanisms.DEFAULT_STATE_DIR
     assert res.DEFAULT_HANDBOOK_ROOT == mechanisms.DEFAULT_HANDBOOK_ROOT
     asyncio.run(asyncio.sleep(0))
+
+
+# ── continuation checks (empty reply / claim_done) ─────────────────────
+
+
+def _msg(text: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        type="message",
+        role="assistant",
+        content=[SimpleNamespace(type="output_text", text=text)],
+    )
+
+
+@pytest.mark.asyncio
+async def test_empty_reply_is_continued_once(tmp_path: Path) -> None:
+    stages = StageLog(tmp_path / "stages.jsonl")
+    nudges = NudgePolicy(max_turns=10)
+    claim = _fc("local-claim_done", "c1")
+    inner = _InnerModel([_response(), _response(claim), _response(), _response()])
+    model = ResilientModel(inner, stages=stages, rewrites={}, nudges=nudges)
+    tools = [_tool("local-claim_done")]
+
+    response = await model.get_response(
+        None, [{"role": "user", "content": "go"}], None, tools, None, [], None
+    )
+
+    assert response.output == [claim]
+    assert len(inner.calls) == 2
+    nudge = inner.calls[1]["input"][-1]
+    assert nudge["role"] == "user" and "no message and no tool call" in nudge["content"]
+    assert [r["kind"] for r in stages.records] == ["model_call", "continuation", "model_call"]
+    assert stages.records[-1]["continuation"] == "empty"
+    assert nudges.claim_done_seen
+
+    # Budget spent (default 1): a later empty reply is returned as-is.
+    history = [{"role": "user", "content": "go"}, {}, {}]
+    response = await model.get_response(None, history, None, tools, None, [], None)
+    assert response.output == [] and len(inner.calls) == 3
+    # The earlier notice stays in the history the model sees.
+    assert any("no message and no tool call" in str(i) for i in inner.calls[2]["input"])
+
+
+@pytest.mark.asyncio
+async def test_final_text_without_claim_done_gets_completion_check(tmp_path: Path) -> None:
+    stages = StageLog(tmp_path / "stages.jsonl")
+    nudges = NudgePolicy(max_turns=10)
+    nudges.observe_tool_call("determination__finalize")
+    claim = _fc("local-claim_done", "c9")
+    inner = _InnerModel([_response(_msg("All done.")), _response(claim)])
+    model = ResilientModel(inner, stages=stages, rewrites={}, nudges=nudges)
+
+    response = await model.get_response(
+        None, [{"role": "user", "content": "go"}], None, [_tool("local-claim_done")], None, [], None
+    )
+
+    assert response.output == [claim]
+    sent = inner.calls[1]["input"]
+    assert sent[-2]["type"] == "message" and sent[-2]["content"][0].text == "All done."
+    assert "without calling claim_done" in sent[-1]["content"]
+    assert "determination.finalize" in sent[-1]["content"]
+    assert stages.summary()["continuations"] == 1
+
+
+@pytest.mark.asyncio
+async def test_completion_check_lists_expected_terminal_actions_and_stops(tmp_path: Path) -> None:
+    nudges = NudgePolicy(max_turns=10, completion_checks=1)
+    inner = _InnerModel([_response(_msg("Done")), _response(_msg("Really done"))])
+    model = ResilientModel(inner, stages=StageLog(tmp_path / "s.jsonl"), rewrites={}, nudges=nudges)
+
+    response = await model.get_response(
+        None, [{"role": "user", "content": "go"}], None, [], None, [], None
+    )
+
+    assert response.output[0].content[0].text == "Really done"
+    notice = inner.calls[1]["input"][-1]["content"]
+    assert "No terminal workflow action has been observed" in notice
+    assert "cases.create_from_order" not in notice and "auth.submit_authorization" in notice
+
+
+@pytest.mark.asyncio
+async def test_text_reply_after_claim_done_ends_normally(tmp_path: Path) -> None:
+    nudges = NudgePolicy(max_turns=10)
+    nudges.observe_tool_call("local-claim_done")
+    inner = _InnerModel([_response(_msg("Done"))])
+    model = ResilientModel(inner, stages=StageLog(tmp_path / "s.jsonl"), rewrites={}, nudges=nudges)
+    await model.get_response(None, [{"role": "user", "content": "go"}], None, [], None, [], None)
+    assert len(inner.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_simultaneous_denies_become_one_templated_message(tmp_path: Path) -> None:
+    from chi_bench.experiment.agents.openai_agents_resilience import HookOutcome
+
+    denies = [
+        HookOutcome("policy_trace", "PreToolUse", blocked=True, reason="cite the handbook"),
+        HookOutcome("criteria_ledger", "PreToolUse", blocked=True, reason="write the ledger"),
+    ]
+    gate = SimpleNamespace(
+        run_event=lambda event, name, inp, tool_response=None: (
+            denies if event == "PreToolUse" else []
+        )
+    )
+
+    async def never(_ctx: Any, _params: str) -> str:  # pragma: no cover
+        raise AssertionError("blocked call must not execute")
+
+    tool = ToolGuard(stages=StageLog(tmp_path / "s.jsonl"), gate=gate).wrap(
+        SimpleNamespace(name="review__submit_md_case_decision", on_invoke_tool=never),
+        mcp_name="review.submit_md_case_decision",
+    )
+    result = await tool.on_invoke_tool(None, "{}")
+    assert result.startswith(
+        "[blocked by policy_trace, criteria_ledger] `review__submit_md_case_decision` needs 2 records"
+    )
+    assert "(1) policy_trace:\ncite the handbook" in result
+    assert "(2) criteria_ledger:\nwrite the ledger" in result
+    assert "retry this same call once" in result
+
+
+@pytest.mark.asyncio
+async def test_sdk_run_continues_past_an_empty_reply(tmp_path: Path) -> None:
+    agents = pytest.importorskip("agents")
+    from agents.items import ModelResponse
+    from agents.models.interface import Model
+    from agents.usage import Usage
+    from openai.types.responses import (
+        ResponseFunctionToolCall,
+        ResponseOutputMessage,
+        ResponseOutputText,
+    )
+
+    from chi_bench.experiment.agents.openai_agents_local_tools import build_local_tools
+
+    class Scripted(Model):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def get_response(self, system_instructions, input, *args, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                output: list[Any] = []  # reasoning-only reply: nothing visible
+            elif self.calls == 2:
+                output = [
+                    ResponseFunctionToolCall(
+                        type="function_call", call_id="c1", name="local-claim_done", arguments="{}"
+                    )
+                ]
+            else:
+                output = [
+                    ResponseOutputMessage(
+                        id="m1",
+                        type="message",
+                        role="assistant",
+                        status="completed",
+                        content=[
+                            ResponseOutputText(type="output_text", text="done", annotations=[])
+                        ],
+                    )
+                ]
+            return ModelResponse(
+                output=output,
+                usage=Usage(requests=1, input_tokens=3, output_tokens=1),
+                response_id=None,
+            )
+
+        def stream_response(self, *args, **kwargs):  # pragma: no cover
+            raise NotImplementedError
+
+    stages = StageLog(tmp_path / "stages.jsonl")
+    nudges = NudgePolicy(max_turns=5)
+    scripted = Scripted()
+    provider = ResilientModelProvider(
+        SimpleNamespace(get_model=lambda _name: scripted),
+        wrap=lambda inner: ResilientModel(inner, stages=stages, rewrites={}, nudges=nudges),
+    )
+    agent = agents.Agent(name="t", instructions="x", tools=build_local_tools(tmp_path), model="s")
+    result = await agents.Runner.run(
+        agent,
+        input="go",
+        max_turns=5,
+        run_config=agents.RunConfig(model_provider=provider, tracing_disabled=True),
+    )
+
+    assert result.final_output == "done"
+    assert scripted.calls == 3 and len(result.raw_responses) == 2
+    # The continuation call's usage is folded into the SDK-visible response.
+    assert result.raw_responses[0].usage.input_tokens == 6
+    assert stages.summary()["continuations"] == 1 and nudges.claim_done_seen

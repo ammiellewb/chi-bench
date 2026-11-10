@@ -23,6 +23,16 @@
   `LITELLM_API_KEY` for `openai-agents` (any OpenAI-compatible server) and
   `claude-code-mechanisms` (LiteLLM Anthropic passthrough).
 - Hook bundles now include `prompt.md`.
+- `openai-agents` no longer ends a run on a reply with neither text nor a tool call,
+  and asks for `claim_done` (listing the terminal actions observed so far) before
+  accepting a text-only final reply. `empty_reply_retries` / `completion_checks`
+  kwargs (defaults 1 and 2; 0 disables).
+- `policy_trace` and `criteria_ledger` gate only final decision calls; intermediate
+  saves (`review.save_md_review`, `review.save_criteria_evaluation`,
+  `triage.set_disposition`, `cm_care_plan.save_care_plan`) are no longer gated.
+  Simultaneous blocks from several gates arrive as one templated message.
+- `payer_letter_center.generate_notification` states in its description that it is
+  the only member-notification tool.
 
 ## 1.1.0 — 2026-10-06
 

@@ -38,6 +38,7 @@ from chi_bench.experiment.agents.openai_agents_resilience import (
     DEFAULT_HANDBOOK_ROOT,
     DEFAULT_PROGRESS_TOOLS,
     DEFAULT_STATE_DIR,
+    DEFAULT_TERMINAL_TOOLS,
     STAGES_FILE,
     MechanismGate,
     NudgePolicy,
@@ -745,6 +746,11 @@ async def run_agent(instruction: str, mcp_url: str, logs_dir: Path = DEFAULT_LOG
         progress_tools=parse_tool_list(
             os.environ.get("OPENAI_AGENTS_PROGRESS_TOOLS"), DEFAULT_PROGRESS_TOOLS
         ),
+        empty_reply_retries=_env_int("OPENAI_AGENTS_EMPTY_REPLY_RETRIES", 1),
+        completion_checks=_env_int("OPENAI_AGENTS_COMPLETION_CHECKS", 2),
+        terminal_tools=parse_tool_list(
+            os.environ.get("OPENAI_AGENTS_TERMINAL_TOOLS"), DEFAULT_TERMINAL_TOOLS
+        ),
     )
 
     _install_oversize_output_patch(logs_dir)
@@ -805,7 +811,9 @@ async def run_agent(instruction: str, mcp_url: str, logs_dir: Path = DEFAULT_LOG
         print(
             f"Mechanisms: {','.join(gate.names) if gate else '<none>'}; "
             f"progress_nudge_turn={nudges.progress_nudge_turn}; "
-            f"turn_budget_warning={nudges.turn_budget_warning}"
+            f"turn_budget_warning={nudges.turn_budget_warning}; "
+            f"empty_reply_retries={nudges.empty_reply_retries}; "
+            f"completion_checks={nudges.completion_checks}"
         )
         print("---")
 

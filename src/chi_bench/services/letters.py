@@ -444,7 +444,7 @@ class LettersService:
         notification_type: Literal["approval", "denial", "pend", "appeal_rights", "appeal_outcome"],
         actor: str | None = None,
     ) -> dict[str, Any]:
-        """Generate a member-facing notification Message addressed to the patient (distinct from provider-facing letters). Writes the Message record only — does not send or deliver it on a channel.
+        """Generate a member-facing notification Message addressed to the patient (distinct from provider-facing letters). This is the only member notification tool, registered as `payer_letter_center.generate_notification`; there is no separate generate_member_notification tool. Writes the Message record only — does not send or deliver it on a channel.
 
         Args:
             case_id: PriorAuthCase.id, such as 'CASE-A1B2C3D4'. Must have a linked patient and service request.

@@ -11,9 +11,19 @@ The same mechanisms also run on `openai-agents` for any OpenAI-compatible model;
 | Mechanism | Plan idea | What it enforces | Hooks |
 |---|---|---|---|
 | `preflight` | 1 — executable preflight | Terminal actions (submit, finalize, appeal, respond-to-pend, deliver, complete assessment, finalize care plan, disenroll, P2P summary) are blocked until `preflight.json` names the tool, has `ready: true`, and every check is `pass` with evidence or `na`. After success the preflight is archived and the agent is told to confirm state with a read-only call; after an error it is told to repair input first. | PreToolUse + PostToolUse on chi-bench tools |
-| `policy_trace` | 2 — traceable policy use | Decision-bearing calls require `policy_trace.jsonl` entries whose `source_file` resolves inside the handbook and whose `quote` appears verbatim in that file. Ships the `policy-locator` skill and `policy_locate.py` (keyword search over `references/**/*.md`). Logs handbook reads to `policy_reads.jsonl`. | PreToolUse on chi-bench tools; PostToolUse on `Read`/`Bash` |
-| `criteria_ledger` | 3 — reasoning before execution | Decision-bearing calls require `criteria_ledger.json`: every criterion has text, a policy source, `met` ∈ {yes, no, unknown}, chart evidence for yes/no, and a next action for unknown; a ledger for another case is rejected. | PreToolUse on chi-bench tools |
+| `policy_trace` | 2 — traceable policy use | Final decision calls (scope note below) require `policy_trace.jsonl` entries whose `source_file` resolves inside the handbook and whose `quote` appears verbatim in that file. Ships the `policy-locator` skill and `policy_locate.py` (keyword search over `references/**/*.md`). Logs handbook reads to `policy_reads.jsonl`. | PreToolUse on chi-bench tools; PostToolUse on `Read`/`Bash` |
+| `criteria_ledger` | 3 — reasoning before execution | Final decision calls (scope note below) require `criteria_ledger.json`: every criterion has text, a policy source, `met` ∈ {yes, no, unknown}, chart evidence for yes/no, and a next action for unknown; a ledger for another case is rejected. | PreToolUse on chi-bench tools |
 | `consent_gate` | 4 — patient autonomy | Not a stop rule (the rubric still requires affirmative enrollment). Ending an outreach call with `consent_obtained: true` or `engagement_status: engaged` requires `consent_record.json` with a verbatim patient quote that appears in the captured outreach turns. Refusal language in a patient reply triggers coaching: acknowledge, do not probe, one low-commitment option. A care-manager turn with three or more questions, or an overloaded patient reply, triggers pacing coaching: one narrow topic per turn with fresh permission. | PreToolUse + PostToolUse on `cm_outreach.*` |
+
+**Scope of the decision gates.** `policy_trace` and `criteria_ledger` fire only on final
+decision calls: `review.submit_nurse_case_recommendation`, `review.submit_md_case_decision`,
+`determination.finalize`, `auth.submit_authorization`, `auth.finalize_provider_determination`,
+`auth.respond_to_pend`, `auth.file_appeal`, `auth.file_external_appeal`, `cm_care_plan.finalize`
+and (policy_trace only) `cm_intake.disenroll_case`. Intermediate saves such as
+`review.save_md_review`, `review.save_criteria_evaluation`, `triage.set_disposition` and
+`cm_care_plan.save_care_plan` are not gated, so the agent can draft and revise freely. In the
+`pa_t019` mechanisms run both gates fired on an unnecessary re-save of the physician review and
+the trial never recovered; the gates now wait for the call that actually commits the decision.
 
 An always-on observer (`observe_hook.py`) is added whenever any mechanism is active. It
 writes one `tool_call` event per call and captures outreach turns; it never blocks.
@@ -91,6 +101,10 @@ How it maps onto the OpenAI Agents SDK:
 - Hooks see MCP tools as `mcp__chi_bench__<ns.method>` and the local tools under their Claude
   Code names (`local-fs-read` → `Read` with `file_path`, `local-bash` → `Bash`, …), so the
   policy-read observer and the `policy_locate.py` flow work unchanged.
+- When several gates block the same call, the agent gets one message:
+  `[blocked by policy_trace, criteria_ledger] \`<tool>\` needs 2 records before it runs …`
+  followed by a numbered section per mechanism with its JSON template, and one instruction to
+  retry the same call once every file is written.
 - Everything lands in the same `trials/<name>/agent/mechanisms/` layout, so
   `scripts/mechanisms_report.py` summarizes both harnesses side by side.
 
@@ -111,6 +125,8 @@ the model misbehaves:
 | Model calls `local_fs_read` / `chart.get_patient` for `local-fs-read` / `chart__get_patient`; SDK raises `ModelBehaviorError` and the trial aborts (33 of 100 Qwen/Gemma trials) | Separator variants resolve to the registered tool; the call executes. The trace records `requested_name`. |
 | Model invents a tool that does not exist | The call is routed to a hidden sink and the model receives `ERROR: tool '<name>' does not exist … Did you mean …` as the tool result; the run continues. The trace shows the invented name with `unresolved_tool: true`. |
 | Invalid JSON arguments or an exception inside a tool (`UserError`, MCP transport error) ends the run | The tool returns `ERROR: tool '<name>' failed: …` to the model. |
+| Model returns neither text nor a tool call (reasoning only); the SDK treats it as the final answer and the run ends with empty output (`pa_t019`, turn 14 of 80) | The wrapper does not return that reply to the SDK. It appends one `[harness notice]` asking the model to continue and calls the model again (`empty_reply_retries`, default 1). |
+| Model ends with a text reply without `claim_done` while the terminal action has not happened | A completion check (`completion_checks`, default 2) replies with the terminal actions observed so far, or the usual terminal actions for the domain when none, and asks for the remaining steps or `claim_done`. Both checks are templated on tool names only; override the terminal set with `terminal_tools`. Set either count to 0 to disable. |
 | 900 s `AgentTimeoutError` leaves no per-stage data | `agent/stages.jsonl` is appended per model call and per tool call as they happen (latency, tokens, errors, blocks, nudges). `run_result.json` gains `stages` (totals and the five slowest tools) and, on an exception, `partial_usage` for the model calls that completed. |
 
 Read `stages.jsonl` before raising limits: a long `model_sec` with few `tool_calls` is a slow model;

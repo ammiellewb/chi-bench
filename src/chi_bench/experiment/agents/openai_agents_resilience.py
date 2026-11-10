@@ -97,6 +97,26 @@ DEFAULT_PROGRESS_TOOLS: tuple[str, ...] = (
     "cm_care_plan.create_draft",
 )
 
+# Terminal workflow actions (mirrors preflight_hook.DEFAULT_TERMINAL_TOOLS).
+# Used by the completion check to tell the agent what has and has not happened.
+DEFAULT_TERMINAL_TOOLS: tuple[str, ...] = (
+    "auth.submit_authorization",
+    "auth.finalize_provider_determination",
+    "auth.respond_to_pend",
+    "auth.file_appeal",
+    "auth.file_external_appeal",
+    "payer_intake_hub.confirm_decisions",
+    "review.submit_nurse_case_recommendation",
+    "review.submit_md_case_decision",
+    "determination.finalize",
+    "payer_letter_center.deliver",
+    "p2p_session.submit_summary",
+    "cm_assessment.complete_assessment",
+    "cm_care_plan.finalize",
+    "cm_intake.disenroll_case",
+)
+CLAIM_DONE_TOOL = "local-claim_done"
+
 _COLLAPSE_RE = re.compile(r"[^a-z0-9]+")
 _WORD_SPLIT_RE = re.compile(r"[^a-z0-9]+")
 
@@ -230,6 +250,7 @@ class StageLog:
             "alias_resolutions": sum(1 for r in self.records if r["kind"] == "tool_alias"),
             "unknown_tool_calls": sum(1 for r in self.records if r["kind"] == "unknown_tool"),
             "nudges": sum(1 for r in self.records if r["kind"] == "nudge"),
+            "continuations": sum(1 for r in self.records if r["kind"] == "continuation"),
             "slowest_tools": slowest,
         }
 
@@ -245,17 +266,63 @@ class NudgePolicy:
     progress_nudge_turn: int = 0
     turn_budget_warning: int = 0
     progress_tools: tuple[str, ...] = DEFAULT_PROGRESS_TOOLS
+    # Continuation checks: never end a run on an empty reply, and ask once or
+    # twice for claim_done before accepting a text-only final reply.
+    empty_reply_retries: int = 1
+    completion_checks: int = 2
+    terminal_tools: tuple[str, ...] = DEFAULT_TERMINAL_TOOLS
     progress_seen: bool = False
+    claim_done_seen: bool = False
+    terminal_seen: list[str] = field(default_factory=list)
     injected: list[tuple[int, dict[str, Any]]] = field(default_factory=list)
     _progress_sent: bool = False
     _budget_sent: bool = False
+    _empty_sent: int = 0
+    _completion_sent: int = 0
 
     def __post_init__(self) -> None:
         self._progress_keys = {collapse_name(name) for name in self.progress_tools}
+        self._terminal_keys = {collapse_name(name): name for name in self.terminal_tools}
+        self._claim_done_key = collapse_name(CLAIM_DONE_TOOL)
 
     def observe_tool_call(self, tool_name: str) -> None:
-        if collapse_name(strip_mcp_prefix(tool_name)) in self._progress_keys:
+        key = collapse_name(strip_mcp_prefix(tool_name))
+        if key in self._progress_keys:
             self.progress_seen = True
+        if key == self._claim_done_key:
+            self.claim_done_seen = True
+        terminal = self._terminal_keys.get(key)
+        if terminal and terminal not in self.terminal_seen:
+            self.terminal_seen.append(terminal)
+
+    def continuation(self, kind: str) -> str | None:
+        """Notice for a reply that would otherwise end the run; None once the budget is spent."""
+        if kind == "empty":
+            if self._empty_sent >= self.empty_reply_retries:
+                return None
+            self._empty_sent += 1
+            return (
+                f"{NUDGE_PREFIX} Your last reply contained no message and no tool call, so "
+                "nothing happened. Continue the task now by calling the next tool. If the "
+                "task is complete, call claim_done."
+            )
+        if self._completion_sent >= self.completion_checks:
+            return None
+        self._completion_sent += 1
+        if self.terminal_seen:
+            observed = "Terminal workflow actions observed so far: " + ", ".join(self.terminal_seen)
+        else:
+            observed = (
+                "No terminal workflow action has been observed yet; this kind of workflow "
+                "usually ends with one of: " + ", ".join(self.terminal_tools[:4]) + ", …"
+            )
+        return (
+            f"{NUDGE_PREFIX} Your reply ended the turn without calling claim_done. {observed}. "
+            "If required steps remain (for example recording the decision, finalizing the "
+            "determination or plan, generating and delivering required letters or "
+            "notifications, or submitting the summary), take them now. If the task is "
+            "complete, call claim_done to finish."
+        )
 
     def pending(self, turn: int) -> list[str]:
         """Notices to inject before model call ``turn`` (1-indexed)."""
@@ -319,6 +386,46 @@ def _set(item: Any, key: str, value: Any) -> None:
         item[key] = value
     else:
         setattr(item, key, value)
+
+
+def _as_input_item(output: Any) -> dict[str, Any] | None:
+    """Convert a model output item into a history item (what the SDK's ``to_input_item`` does)."""
+    if isinstance(output, dict):
+        return dict(output)
+    dump = getattr(output, "model_dump", None)
+    if callable(dump):
+        try:
+            return dump(exclude_unset=True)
+        except Exception:  # pragma: no cover - defensive
+            return None
+    if hasattr(output, "__dict__"):
+        return dict(vars(output))
+    return None
+
+
+def _message_text(response: Any) -> str:
+    parts: list[str] = []
+    for output in getattr(response, "output", None) or []:
+        if (_get(output, "type") or "") != "message":
+            continue
+        for part in _get(output, "content") or []:
+            text = _get(part, "text")
+            if isinstance(text, str):
+                parts.append(text)
+    return "".join(parts)
+
+
+def _merge_usage(target: Any, source: Any) -> None:
+    """Fold a continuation call's usage into the response the SDK will count."""
+    target_usage = getattr(target, "usage", None)
+    source_usage = getattr(source, "usage", None)
+    add = getattr(target_usage, "add", None)
+    if target_usage is None or source_usage is None or not callable(add):
+        return
+    try:
+        add(source_usage)
+    except Exception:  # pragma: no cover - usage shapes differ across SDK versions
+        logger.debug("could not merge continuation usage", exc_info=True)
 
 
 class ResilientModel(_ModelBase):  # type: ignore[misc,valid-type]
@@ -428,52 +535,88 @@ class ResilientModel(_ModelBase):  # type: ignore[misc,valid-type]
         )
         items = input if isinstance(input, list) else [{"role": "user", "content": str(input)}]
         turn = self._begin_turn(items)
+        raw_len = len(items)
         items = self._restore_history(items)
         if self._nudges is not None:
             before = len(self._nudges.injected)
             items = self._nudges.apply(items, turn)
             for _pos, notice in self._nudges.injected[before:]:
                 self._stages.record("nudge", turn=turn, text=notice["content"])
-        started = time.time()
-        try:
-            response = await self.inner.get_response(
-                system_instructions,
-                items,
-                model_settings,
-                visible_tools,
-                output_schema,
-                handoffs,
-                tracing,
-                previous_response_id=previous_response_id,
-                conversation_id=conversation_id,
-                prompt=prompt,
-                **kwargs,
-            )
-        except Exception as exc:
+
+        async def call(current: list[Any], continuation: str | None) -> Any:
+            started = time.time()
+            try:
+                result = await self.inner.get_response(
+                    system_instructions,
+                    current,
+                    model_settings,
+                    visible_tools,
+                    output_schema,
+                    handoffs,
+                    tracing,
+                    previous_response_id=previous_response_id,
+                    conversation_id=conversation_id,
+                    prompt=prompt,
+                    **kwargs,
+                )
+            except Exception as exc:
+                self._stages.record(
+                    "model_call",
+                    turn=turn,
+                    latency_sec=round(time.time() - started, 3),
+                    input_items=len(current),
+                    continuation=continuation,
+                    error=f"{type(exc).__name__}: {exc}"[:500],
+                )
+                raise
+            latency = round(time.time() - started, 3)
+            n_calls = self._rewrite_outputs(result, resolver)
+            usage = getattr(result, "usage", None)
+            details = getattr(usage, "input_tokens_details", None)
+            cached = getattr(details, "cached_tokens", None) if details is not None else None
             self._stages.record(
                 "model_call",
                 turn=turn,
-                latency_sec=round(time.time() - started, 3),
-                input_items=len(items),
-                error=f"{type(exc).__name__}: {exc}"[:500],
+                latency_sec=latency,
+                input_items=len(current),
+                n_tool_calls=n_calls,
+                continuation=continuation,
+                input_tokens=getattr(usage, "input_tokens", None),
+                output_tokens=getattr(usage, "output_tokens", None),
+                cached_tokens=int(cached) if isinstance(cached, int) else None,
             )
-            raise
-        latency = round(time.time() - started, 3)
-        n_calls = self._rewrite_outputs(response, resolver)
-        usage = getattr(response, "usage", None)
-        details = getattr(usage, "input_tokens_details", None)
-        cached = getattr(details, "cached_tokens", None) if details is not None else None
-        self._stages.record(
-            "model_call",
-            turn=turn,
-            latency_sec=latency,
-            input_items=len(items),
-            n_tool_calls=n_calls,
-            input_tokens=getattr(usage, "input_tokens", None),
-            output_tokens=getattr(usage, "output_tokens", None),
-            cached_tokens=int(cached) if isinstance(cached, int) else None,
-        )
+            return result
+
+        response = await call(items, None)
+        # A reply with no tool call ends the SDK run. Do not accept an empty
+        # reply, and ask for claim_done before accepting a text-only one.
+        while self._nudges is not None:
+            kind = self._ending_kind(response)
+            notice = self._nudges.continuation(kind) if kind else None
+            if notice is None:
+                break
+            history = [it for it in map(_as_input_item, _get(response, "output") or []) if it]
+            notice_item = {"role": "user", "content": notice}
+            for item in history:
+                self._nudges.injected.append((raw_len, item))
+            self._nudges.injected.append((raw_len, notice_item))
+            self._stages.record("continuation", turn=turn, reason=kind, text=notice)
+            items = [*items, *history, notice_item]
+            previous = response
+            response = await call(items, kind)
+            _merge_usage(response, previous)
         return response
+
+    def _ending_kind(self, response: Any) -> str | None:
+        """'empty' / 'final_text' when this reply would end the run, else None."""
+        outputs = _get(response, "output") or []
+        if any(_is_function_call(o) for o in outputs):
+            return None
+        if not _message_text(response).strip():
+            return "empty"
+        if self._nudges is not None and not self._nudges.claim_done_seen:
+            return "final_text"
+        return None
 
     def stream_response(
         self,
@@ -762,6 +905,20 @@ def _result_ok(result: Any) -> bool:
     return not head.startswith(("ERROR", "=== TIMEOUT", "[blocked"))
 
 
+def _block_message(tool_name: str, denies: list[HookOutcome]) -> str:
+    label = ", ".join(o.mechanism for o in denies)
+    if len(denies) == 1:
+        return f"[blocked by {label}] {denies[0].reason or ''}"
+    sections = "\n\n".join(
+        f"({i}) {o.mechanism}:\n{o.reason or ''}" for i, o in enumerate(denies, start=1)
+    )
+    return (
+        f"[blocked by {label}] `{tool_name}` needs {len(denies)} records before it runs. "
+        "Write every file described below (each section gives its JSON template), then "
+        f"retry this same call once.\n\n{sections}"
+    )
+
+
 def _parse_params(params_str: str) -> dict[str, Any]:
     try:
         parsed = json.loads(params_str) if params_str else {}
@@ -800,17 +957,15 @@ class ToolGuard:
                     outcomes = []
                 denies = [o for o in outcomes if o.blocked]
                 if denies:
-                    blocked_by = [o.mechanism for o in denies]
-                    reasons = "\n\n".join(o.reason or "" for o in denies)
                     stages.record(
                         "tool_call",
                         tool=tool_name,
                         latency_sec=round(time.time() - started, 3),
                         ok=False,
                         blocked=True,
-                        mechanisms=blocked_by,
+                        mechanisms=[o.mechanism for o in denies],
                     )
-                    return f"[blocked by {', '.join(blocked_by)}] {reasons}"
+                    return _block_message(tool_name, denies)
             try:
                 result = await original(context, params_str)
             except asyncio.CancelledError:

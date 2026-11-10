@@ -297,6 +297,13 @@ Configs:
   diagnose with `agent/stages.jsonl`, the `stages`/`partial_usage` fields in `run_result.json`,
   and the `requested_name`/`unresolved_tool` fields in `trace.jsonl`. **Why:** 33 of 100 saved
   Qwen/Gemma trials ended on `ModelBehaviorError` for `local_fs_read`-style names.
+- **`openai-agents` never ends on an empty reply and asks for `claim_done` before accepting a
+  text-only final reply** (`empty_reply_retries`=1, `completion_checks`=2 by default; 0 disables).
+  The decision gates (`policy_trace`, `criteria_ledger`) fire only on final decision calls, not
+  on intermediate saves. **Why:** the `pa_t019` mechanisms run re-saved the MD review, both gates
+  blocked at once, the handbook search missed, and the model's next reply was reasoning-only;
+  the SDK took that as the final answer at turn 14 of 80. Keep all notices templated on tool
+  names; never add task-specific content (Cup circumvention rule).
 - **LiteLLM/vLLM route:** `model: litellm/<id>` or `agent_kwargs: {provider_route: litellm}` with
   `LITELLM_BASE_URL` (+ optional `LITELLM_API_KEY`) works for `openai-agents` (any OpenAI-compatible
   root; vLLM directly) and `claude-code-mechanisms` (LiteLLM Anthropic `/v1/messages` proxy root).

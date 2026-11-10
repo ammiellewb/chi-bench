@@ -30,6 +30,11 @@ TRACE_FILE = "policy_trace.jsonl"
 READS_FILE = "policy_reads.jsonl"
 MIN_QUOTE_CHARS = 20
 
+# Final decisions only. Intermediate saves (``triage.set_disposition``,
+# ``review.save_criteria_evaluation``, ``review.save_md_review``,
+# ``cm_care_plan.save_care_plan``) are deliberately not gated: the agent must be
+# able to draft and revise freely, and gating them cost a whole trial when both
+# decision gates fired on an unnecessary re-save (pa_t019).
 DECISION_TOOLS: tuple[str, ...] = (
     # provider
     "auth.submit_authorization",
@@ -38,14 +43,10 @@ DECISION_TOOLS: tuple[str, ...] = (
     "auth.file_appeal",
     "auth.file_external_appeal",
     # payer
-    "triage.set_disposition",
-    "review.save_criteria_evaluation",
     "review.submit_nurse_case_recommendation",
-    "review.save_md_review",
     "review.submit_md_case_decision",
     "determination.finalize",
     # care management
-    "cm_care_plan.save_care_plan",
     "cm_care_plan.finalize",
     "cm_intake.disenroll_case",
 )

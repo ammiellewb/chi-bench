@@ -296,20 +296,29 @@ def test_criteria_ledger_validation_rules() -> None:
 
 def test_criteria_ledger_gate(state: Path, capsys) -> None:
     assert (
-        criteria_ledger_hook.pre_tool_use(
-            _mcp("review.save_criteria_evaluation", {"case_id": "C1"})
-        )
+        criteria_ledger_hook.pre_tool_use(_mcp("review.submit_md_case_decision", {"case_id": "C1"}))
         == 2
     )
     assert "criteria_ledger.json" in capsys.readouterr().err
     state.mkdir(exist_ok=True)
     (state / "criteria_ledger.json").write_text(json.dumps(_good_ledger()))
     assert (
-        criteria_ledger_hook.pre_tool_use(
-            _mcp("review.save_criteria_evaluation", {"case_id": "C1"})
-        )
+        criteria_ledger_hook.pre_tool_use(_mcp("review.submit_md_case_decision", {"case_id": "C1"}))
         == 0
     )
+
+
+def test_decision_gates_skip_intermediate_saves(state: Path) -> None:
+    # Drafting calls are never gated; only the final decision calls are.
+    for tool in (
+        "review.save_md_review",
+        "review.save_criteria_evaluation",
+        "triage.set_disposition",
+        "cm_care_plan.save_care_plan",
+    ):
+        assert criteria_ledger_hook.pre_tool_use(_mcp(tool, {"case_id": "C1"})) == 0
+        assert policy_trace_hook.pre_tool_use(_mcp(tool, {"case_id": "C1"})) == 0
+    assert set(criteria_ledger_hook.DECISION_TOOLS) <= set(policy_trace_hook.DECISION_TOOLS)
 
 
 # ── consent gate ───────────────────────────────────────────────────────

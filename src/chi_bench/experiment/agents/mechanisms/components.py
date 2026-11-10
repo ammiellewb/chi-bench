@@ -74,7 +74,9 @@ input before doing anything else."""
 
 _POLICY_TRACE_PROMPT = """\
 ### Mechanism: traceable policy use
-Decision-bearing tool calls are gated on verified handbook citations. Locate clauses with \
+Final decision calls (submitting a recommendation or decision, finalizing a determination \
+or care plan, submitting or appealing an authorization, responding to a pend) are gated on \
+verified handbook citations; intermediate saves are not. Locate clauses with \
 `python3 -I {state}/bin/policy_locate.py "<keywords>"` (optionally `--book <sub-book>`), \
 read the surrounding section, then append one JSON object per criterion to \
 `{state}/policy_trace.jsonl`:
@@ -87,9 +89,10 @@ chapter title, and prefer the most specific sub-book for the role you are playin
 
 _CRITERIA_LEDGER_PROMPT = """\
 ### Mechanism: assess criteria before executing
-Separate clinical reasoning from workflow execution. Before any decision-bearing call \
-(criteria evaluation, recommendation, MD decision, determination, submission, appeal, care \
-plan), write `{state}/criteria_ledger.json`:
+Separate clinical reasoning from workflow execution. Before any final decision call \
+(submitting a recommendation or decision, finalizing a determination or care plan, \
+submitting or appealing an authorization, responding to a pend), write \
+`{state}/criteria_ledger.json`:
 {{"case_id": "<id>", "decision": "<question>", "criteria": [{{"id": "C1", "criterion": \
 "<policy criterion>", "source": "<handbook file/section>", "evidence": [{{"where": "<chart \
 section / document / transcript>", "finding": "<fact>"}}], "met": "yes|no|unknown", \

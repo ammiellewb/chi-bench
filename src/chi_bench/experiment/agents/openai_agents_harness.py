@@ -65,6 +65,9 @@ _NUDGE_FLAG_ENV: tuple[tuple[str, str], ...] = (
     ("progress_nudge_turn", "OPENAI_AGENTS_PROGRESS_NUDGE_TURN"),
     ("turn_budget_warning", "OPENAI_AGENTS_TURN_BUDGET_WARNING"),
     ("progress_tools", "OPENAI_AGENTS_PROGRESS_TOOLS"),
+    ("empty_reply_retries", "OPENAI_AGENTS_EMPTY_REPLY_RETRIES"),
+    ("completion_checks", "OPENAI_AGENTS_COMPLETION_CHECKS"),
+    ("terminal_tools", "OPENAI_AGENTS_TERMINAL_TOOLS"),
 )
 
 
@@ -132,6 +135,25 @@ class OpenAIAgentsHarness(BaseInstalledAgent):
             cli="--progress-tools",
             type="str",
             env_fallback="OPENAI_AGENTS_PROGRESS_TOOLS",
+        ),
+        # Continuation checks (runner defaults: 1 and 2; 0 disables).
+        CliFlag(
+            "empty_reply_retries",
+            cli="--empty-reply-retries",
+            type="int",
+            env_fallback="OPENAI_AGENTS_EMPTY_REPLY_RETRIES",
+        ),
+        CliFlag(
+            "completion_checks",
+            cli="--completion-checks",
+            type="int",
+            env_fallback="OPENAI_AGENTS_COMPLETION_CHECKS",
+        ),
+        CliFlag(
+            "terminal_tools",
+            cli="--terminal-tools",
+            type="str",
+            env_fallback="OPENAI_AGENTS_TERMINAL_TOOLS",
         ),
         CliFlag(
             "api_mode",
