@@ -474,11 +474,17 @@ def capture_provenance(cfg: SubmissionConfig) -> dict[str, object]:
     )
     # runner._load_env uses override=True after this snapshot. Record that
     # same model selection without loading credentials into the process here.
-    file_model = dotenv_values(cfg.run.env_file).get("CHI_BENCH_JUDGE_MODEL")
+    file_env = dotenv_values(cfg.run.env_file)
+    file_model = file_env.get("CHI_BENCH_JUDGE_MODEL")
     judge_model = (
         file_model
         if file_model is not None
         else os.environ.get("CHI_BENCH_JUDGE_MODEL", "claude-opus-4-7")
+    )
+    judge_provider = (
+        file_env.get("CHI_BENCH_JUDGE_PROVIDER")
+        or os.environ.get("CHI_BENCH_JUDGE_PROVIDER")
+        or "anthropic"
     )
     sha, dirty = _git_sha_and_dirty()
     prov: dict[str, object] = {
@@ -492,6 +498,7 @@ def capture_provenance(cfg: SubmissionConfig) -> dict[str, object]:
         "dataset_content_file_count": identity.file_count,
         "dataset_content_domains": list(identity.domains),
         "judge_model": judge_model,
+        "judge_provider": judge_provider,
         "environment": cfg.run.environment,
         "started_at": _utcnow_iso(),
         "finished_at": None,

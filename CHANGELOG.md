@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added (judge)
+
+- The judge, P2P counterpart simulator and patient simulator can run on any OpenAI-compatible
+  model (`CHI_BENCH_JUDGE_PROVIDER=openai`, `CHI_BENCH_JUDGE_BASE_URL`, `CHI_BENCH_JUDGE_MODEL`;
+  simulators follow unless `CHI_BENCH_SIM_*` is set), so runs need no Anthropic key. The open
+  judge is a sandboxed Chat Completions tool loop with the same prompt, `verdicts.json` and
+  strict-schema validity; it repairs verdicts *format* at most twice. Scorecards record
+  `judge_provider` and `judge_base_url`. On 9 retained Sonnet trials, Qwen3.6-35B matched the
+  Opus trial reward 9 of 9 and the rubric verdict 90 of 92. Not paper-protocol comparable.
+
 ### Fixes
 
 - `openai-agents` no longer aborts a trial when the model misnames a tool. Separator

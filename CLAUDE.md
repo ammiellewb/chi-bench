@@ -210,9 +210,13 @@ Configs:
   flattens SDK tool-call items into one-call steps.** **Why:** this makes parallel batches look
   sequential. Reconstruct batches from `agent/trace.jsonl` call/result adjacency and correlated
   IDs, or corroborate them with server timestamps, without inspecting arguments or reasoning.
-- **`ANTHROPIC_API_KEY` is always required**, even for non-Anthropic agents — the judge is pinned
-  to `claude-opus-4-7`. `CHI_BENCH_JUDGE_MODEL` overrides it but deviates from the paper protocol.
-  Judge voting defaults to one; `CHI_BENCH_JUDGE_NUM_VOTES` configures additional votes.
+- **`ANTHROPIC_API_KEY` is required unless the judge and simulators are moved off Anthropic.**
+  The default judge is the Claude Code CLI on `claude-opus-4-7`. `CHI_BENCH_JUDGE_PROVIDER=openai`
+  plus `CHI_BENCH_JUDGE_BASE_URL`/`_MODEL` moves the judge *and* (unless `CHI_BENCH_SIM_*` is set)
+  the P2P and patient simulators to an OpenAI-compatible server; the user's setting is Qwen3.6-35B
+  on gpubox (`http://100.80.214.78:8000/v1`). Moving only the judge still needs the key for P2P
+  tasks. Any non-Opus judge deviates from the paper protocol. Judge voting defaults to one;
+  `CHI_BENCH_JUDGE_NUM_VOTES` configures additional votes.
 - **Dataset version pin** lives at `data/.chi-bench-version` and must match the submission YAML's
   `dataset.version`. Also require `dataset.content_sha256` to match the accepted task/shared-world/handbook bytes; inspect candidates with `uv run python scripts/dataset_identity.py --data-root data`, without rewriting source data or automatically accepting drift. `cb submission validate` (preflight) rejects mismatches. `cb data download`
   writes the pin in one step; the raw `hf download` path needs `echo "$REV" > data/.chi-bench-version` (`huggingface-cli` is a dead shim under huggingface_hub>=1.0; `download_dataset` prefers `hf`).

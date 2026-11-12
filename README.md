@@ -57,7 +57,7 @@ uv sync --extra dev
 
 **2. API keys.** Copy `.env.example` to `.env` and fill in:
 
-- `ANTHROPIC_API_KEY` — **required**. The workspace judge (`claude-opus-4-7`) grades every trial; also the default credential for the Claude Code agent harness.
+- `ANTHROPIC_API_KEY` — **required** for the default judge (`claude-opus-4-7`), which grades every trial, and the default credential for the Claude Code agent harness. Runs can instead judge and simulate with an OpenAI-compatible model; see [the judge docs](docs/judge.md#open-model-judge-and-simulators-no-anthropic-key).
 - `OPENAI_API_KEY` — required for Codex and OAI Agents rows.
 - `GEMINI_API_KEY` — required for Gemini CLI rows.
 - `OPENROUTER_API_KEY` — required for the open-stack rows (Hermes / OpenClaw / OAI Agents / DeepAgents on open-weight models).

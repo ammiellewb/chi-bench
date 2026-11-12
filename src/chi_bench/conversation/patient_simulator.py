@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from dataclasses import dataclass
@@ -10,6 +11,7 @@ import anthropic
 from chi_bench.conversation.message import STOP_SIGNAL
 from chi_bench.conversation.persona import PatientPersonaConfig, build_system_prompt
 from chi_bench.conversation.session import ConversationSession
+from chi_bench.llm_routes import chat_text, simulator_route
 
 DEFAULT_MODEL = "claude-sonnet-5"
 
@@ -57,8 +59,13 @@ class PatientSimulator:
         self._scenario = scenario
         self._clinical_context = clinical_context
         self._persona_config = persona_config
-        self._model = model or os.environ.get("CHI_BENCH_PATIENT_SIM_MODEL", DEFAULT_MODEL)
-        self._client = anthropic.AsyncAnthropic()
+        self._route = simulator_route("patient_simulator", "CHI_BENCH_PATIENT_SIM_MODEL")
+        if self._route.is_openai:
+            self._model = model or self._route.model or ""
+            self._client = None
+        else:
+            self._model = model or os.environ.get("CHI_BENCH_PATIENT_SIM_MODEL", DEFAULT_MODEL)
+            self._client = anthropic.AsyncAnthropic()
         self._system_prompt = build_system_prompt(
             scenario=scenario,
             clinical_context=clinical_context,
@@ -90,6 +97,28 @@ class PatientSimulator:
         api_messages = llm_messages[1:]
 
         start = time.monotonic()
+        if self._route.is_openai:
+            route = self._route
+            if self._model and self._model != route.model:
+                from dataclasses import replace
+
+                route = replace(route, model=self._model)
+            raw_text, token_usage = await asyncio.to_thread(
+                chat_text,
+                route,
+                system_msg,
+                api_messages,
+                max_tokens=route.max_tokens or 4096,
+            )
+            elapsed = time.monotonic() - start
+            stopped = self.detect_stop_signal(raw_text)
+            content = self.strip_stop_signal(raw_text) if stopped else raw_text
+            return SimulatorResponse(
+                content=content,
+                stopped=stopped,
+                token_usage=token_usage,
+                generation_time_seconds=elapsed,
+            )
         request_options: dict[str, Any] = {}
         if self._model == "claude-sonnet-5":
             # Sonnet 5 enables adaptive thinking by default. Preserve the

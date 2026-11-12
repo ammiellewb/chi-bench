@@ -1044,10 +1044,11 @@ def collect_all_verifier_checks(
                     if judge is not None:
                         runner = judge
                     else:
-                        from chi_bench.verifier.judge.claude_runner import ClaudeAgentRunner
+                        from chi_bench.verifier.judge.runner_factory import make_judge_runner
 
-                        runner = ClaudeAgentRunner(
-                            model=os.environ.get("CHI_BENCH_JUDGE_MODEL") or "claude-opus-4-7",
+                        # CHI_BENCH_JUDGE_PROVIDER selects the Claude CLI (default)
+                        # or an OpenAI-compatible endpoint; see chi_bench.llm_routes.
+                        runner = make_judge_runner(
                             timeout_seconds=int(
                                 os.environ.get("CHI_BENCH_JUDGE_TIMEOUT_S") or "900"
                             ),
@@ -1356,10 +1357,9 @@ def _run_cm_verifier(
         if judge is not None:
             runner = judge
         else:
-            from chi_bench.verifier.judge.claude_runner import ClaudeAgentRunner
+            from chi_bench.verifier.judge.runner_factory import make_judge_runner
 
-            runner = ClaudeAgentRunner(
-                model=os.environ.get("CHI_BENCH_JUDGE_MODEL", "claude-opus-4-7"),
+            runner = make_judge_runner(
                 timeout_seconds=int(os.environ.get("CHI_BENCH_JUDGE_TIMEOUT_S", "900")),
                 max_retries=1,
                 debug_dir=Path(f"/logs/artifacts/workspaces/{case_id}/judge"),
@@ -1606,7 +1606,7 @@ def write_verifier_outputs(
                 # The judge model + prompt version are recorded at env-read time
                 # so a later replay can tell which model rendered the verdicts,
                 # even if env vars change before the scorecard is consumed.
-                "judge_model": os.environ.get("CHI_BENCH_JUDGE_MODEL", "claude-opus-4-7"),
+                **_judge_provenance(),
                 "judge_prompt_version": get_judge_prompt_version(
                     "e2e_workflow_v2"
                     if is_workflow_v2(exported, expectations)
@@ -1728,7 +1728,7 @@ def run_verifier(
                     # replay tooling can tell which model produced the
                     # verdicts and why (timeout / parse error) even if env
                     # vars change before the context is consumed.
-                    "judge_model": os.environ.get("CHI_BENCH_JUDGE_MODEL", "claude-opus-4-7"),
+                    **_judge_provenance(),
                     "judge_prompt_version": get_judge_prompt_version(
                         expectations.get("verifier_contract")
                     ),
@@ -1862,3 +1862,10 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
+
+
+def _judge_provenance() -> dict[str, Any]:
+    """Judge model and route for scorecard provenance (no credentials)."""
+    from chi_bench.verifier.judge.runner_factory import judge_provenance
+
+    return judge_provenance()

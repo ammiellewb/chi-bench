@@ -631,8 +631,9 @@ class P2PService:
         """
         import os
 
-        import anthropic
+        from chi_bench.llm_routes import chat_text, simulator_route
 
+        route = simulator_route("p2p_simulator", "CHI_BENCH_P2P_SIMULATOR_MODEL")
         model_env = os.environ.get("CHI_BENCH_P2P_SIMULATOR_MODEL") or "sonnet"
         model_map = {
             "sonnet": "claude-sonnet-5",
@@ -651,6 +652,17 @@ class P2PService:
             role = "assistant" if turn.speaker == "counterpart" else "user"
             messages.append({"role": role, "content": turn.message})
         messages.append({"role": "user", "content": message})
+
+        if route.is_openai:
+            reply_text, _tokens = chat_text(
+                route,
+                counterpart_context,
+                messages,
+                max_tokens=route.max_tokens or 4096,
+            )
+            return reply_text, None
+
+        import anthropic
 
         client = anthropic.Anthropic()
         request_options: dict[str, Any] = {}

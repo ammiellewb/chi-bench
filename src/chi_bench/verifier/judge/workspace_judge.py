@@ -338,7 +338,9 @@ class WorkspaceJudge:
 
     def _runner_for_vote(self, vote_index: int) -> ClaudeAgentRunner | Any:
         """Return an isolated runner for a vote when the runner supports cloning."""
-        if not isinstance(self.runner, ClaudeAgentRunner):
+        from chi_bench.verifier.judge.openai_runner import OpenAICompatJudgeRunner
+
+        if not isinstance(self.runner, (ClaudeAgentRunner, OpenAICompatJudgeRunner)):
             return self.runner
 
         debug_dir = self.runner.debug_dir

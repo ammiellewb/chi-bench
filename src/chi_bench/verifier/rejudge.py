@@ -387,8 +387,16 @@ def _run_judge_session(
     WorkspaceJudge internals. Production callers leave ``runner=None`` and
     a real ``ClaudeAgentRunner`` is constructed here.
     """
+    from chi_bench.llm_routes import judge_route
     from chi_bench.verifier.judge.claude_runner import ClaudeAgentRunner
 
+    if runner is None and judge_route().is_openai:
+        from chi_bench.verifier.judge.runner_factory import make_judge_runner
+
+        runner = make_judge_runner(
+            timeout_seconds=timeout_seconds,
+            debug_dir=trial_dir / "artifacts" / "judge_rejudge",
+        )
     if runner is None:
         runner = ClaudeAgentRunner(model="opus", timeout_seconds=timeout_seconds)
         # Force API-key auth for rejudge sessions: the default runner detects

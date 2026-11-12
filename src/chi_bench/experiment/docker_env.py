@@ -41,6 +41,21 @@ FORWARDED_ENV_KEYS: tuple[str, ...] = (
     "CHI_BENCH_JUDGE_MODEL",
     "CHI_BENCH_JUDGE_TIMEOUT_S",
     "CHI_BENCH_JUDGE_NUM_VOTES",
+    # Open-model judge and simulator routes (chi_bench.llm_routes). Forwarded
+    # to the trusted server/verifier only; the agent env never receives them.
+    "CHI_BENCH_JUDGE_PROVIDER",
+    "CHI_BENCH_JUDGE_BASE_URL",
+    "CHI_BENCH_JUDGE_API_KEY",
+    "CHI_BENCH_JUDGE_EXTRA_BODY",
+    "CHI_BENCH_JUDGE_MAX_TURNS",
+    "CHI_BENCH_JUDGE_READ_CHARS",
+    "CHI_BENCH_JUDGE_MAX_TOKENS",
+    "CHI_BENCH_SIM_PROVIDER",
+    "CHI_BENCH_SIM_BASE_URL",
+    "CHI_BENCH_SIM_API_KEY",
+    "CHI_BENCH_SIM_MODEL",
+    "CHI_BENCH_SIM_EXTRA_BODY",
+    "CHI_BENCH_SIM_MAX_TOKENS",
     "ANTHROPIC_API_KEY",
     "GEMINI_API_KEY",
     "GROK_API_KEY",
@@ -603,7 +618,8 @@ class ChiBenchDockerEnvironment(BaseEnvironment):
         merged = {
             k: v
             for k, v in merged.items()
-            if k != "CHI_BENCH_CONTROL_TOKEN" and not k.startswith("CHI_BENCH_JUDGE_")
+            if k != "CHI_BENCH_CONTROL_TOKEN"
+            and not k.startswith(("CHI_BENCH_JUDGE_", "CHI_BENCH_SIM_"))
         }
         return await self._exec_in(
             self.container_name,

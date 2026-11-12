@@ -50,10 +50,60 @@ protocol.
 
 ## API key requirements
 
-`ANTHROPIC_API_KEY` is **always required**, even if the agent under
-test is not an Anthropic model (e.g. running Codex or OpenClaw still
-needs the Anthropic key to power the judge). Verifier runs cost approx
+With the default judge, `ANTHROPIC_API_KEY` is required even if the agent
+under test is not an Anthropic model (e.g. running Codex or OpenClaw still
+needs the Anthropic key to power the judge). To run without it, move the
+judge and simulators to an OpenAI-compatible model (next section). Verifier runs cost approx
 $0.05-$0.30 per trial on top of agent costs.
+
+## Open-model judge and simulators (no Anthropic key)
+
+Three trusted-side roles call a model: the workspace judge, the P2P counterpart simulator and
+the care-management patient simulator. Each can run on any OpenAI-compatible Chat Completions
+server (vLLM, a LiteLLM proxy, OpenAI, Azure). With all three moved, a run whose agent is not
+an Anthropic model needs no Anthropic key at all.
+
+```bash
+# .env — one block moves the judge and both simulators
+CHI_BENCH_JUDGE_PROVIDER=openai
+CHI_BENCH_JUDGE_BASE_URL=http://100.80.214.78:8000/v1   # gpubox vLLM
+CHI_BENCH_JUDGE_MODEL=Qwen/Qwen3.6-35B-A3B-FP8
+# CHI_BENCH_JUDGE_API_KEY=...                           # optional bearer token
+```
+
+| Variable | Effect |
+|---|---|
+| `CHI_BENCH_JUDGE_PROVIDER` | `anthropic` (default, Claude Code CLI + Opus 4.7) or `openai` |
+| `CHI_BENCH_JUDGE_BASE_URL`, `_MODEL`, `_API_KEY` | OpenAI-compatible root, model id, optional key |
+| `CHI_BENCH_JUDGE_EXTRA_BODY` | JSON merged into each request, e.g. sampling settings |
+| `CHI_BENCH_JUDGE_MAX_TURNS` / `_READ_CHARS` / `_MAX_TOKENS` | Tool-loop limits (80 / 20000 / 16384) |
+| `CHI_BENCH_SIM_PROVIDER`, `_BASE_URL`, `_MODEL`, `_API_KEY`, `_EXTRA_BODY`, `_MAX_TOKENS` | Separate simulator route. Unset: simulators follow the judge route. |
+
+How the open judge works: `OpenAICompatJudgeRunner` (`verifier/judge/openai_runner.py`) replaces
+the `claude -p` session with a Chat Completions tool loop over `Read`, `Glob`, `Grep`, `Write`
+and `Edit`, confined to the judge workspace. It receives the same prompt and writes the same
+`verdicts.json`, so the strict-schema parsing, validity and voting rules above apply unchanged.
+Tool results are capped at 20,000 characters; the model pages larger files. Before accepting
+the final reply the runner checks the *format* of `verdicts.json` (exactly the rubric IDs in
+`rubrics.json`, boolean `pass`, nonblank explanation and evidence) and sends up to two repair
+requests. It never changes a verdict. Debug transcripts go under `artifacts/judge/<case>/` (live)
+or `artifacts/judge_rejudge/` (rejudge).
+
+The simulators use the same route with a 4,096-token reply cap so reasoning models do not
+exhaust the budget while thinking. Anthropic model aliases (`sonnet`) in
+`CHI_BENCH_P2P_SIMULATOR_MODEL` are ignored on the `openai` route. For Qwen3 on vLLM,
+`CHI_BENCH_SIM_EXTRA_BODY='{"chat_template_kwargs": {"enable_thinking": false}}'` makes
+simulator replies faster.
+
+Provenance: scorecards record `judge_model`, `judge_provider` and `judge_base_url`; submission
+provenance records `judge_provider`. **An open-model judge deviates from the paper protocol**;
+its scores are not directly comparable with Opus-judged runs or the leaderboard.
+
+Validation (2026-11-12): re-judging 9 retained Sonnet 5.5 UM trials (t012 to t036) with Qwen3.6-35B
+on gpubox matched the original Opus trial reward on 9 of 9 and the rubric verdict on 90 of 92.
+Both disagreements were Qwen failing an MD rationale or conservative-treatment rubric that
+Opus passed. The trusted container must be able to reach the endpoint; Modal sandboxes cannot
+reach a private address such as a Tailscale IP.
 
 ## Determinism
 
