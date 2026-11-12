@@ -153,3 +153,15 @@ def test_litellm_route_requires_base_url_and_rejects_unknown_routes(tmp_path: Pa
         ClaudeCodeMechanismsHarness(logs_dir=tmp_path, provider_route="litellm", model_name="x")
     with pytest.raises(ValueError, match="provider_route"):
         ClaudeCodeMechanismsHarness(logs_dir=tmp_path, provider_route="tinker", model_name="x")
+
+
+def test_completion_mechanism_registers_a_stop_hook_without_matcher(tmp_path: Path) -> None:
+    settings = build_settings(resolve_mechanisms("completion"))
+    stop = settings["hooks"]["Stop"]
+    assert len(stop) == 1 and "matcher" not in stop[0]
+    assert stop[0]["hooks"][0]["command"].endswith("/bin/completion_hook.py")
+    assert all("matcher" in e for e in settings["hooks"]["PostToolUse"])
+    dest = write_bundle(resolve_mechanisms("completion"), tmp_path / "b")
+    assert (dest / "bin" / "completion_hook.py").exists()
+    assert "### Mechanism: finish the workflow before stopping" in (dest / "prompt.md").read_text()
+    assert "completion" in [m.name for m in resolve_mechanisms("all")]

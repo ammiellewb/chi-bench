@@ -33,6 +33,10 @@
   Simultaneous blocks from several gates arrive as one templated message.
 - `payer_letter_center.generate_notification` states in its description that it is
   the only member-notification tool.
+- New `completion` mechanism (included in `all`): a Claude Code Stop hook blocks ending
+  the session, at most twice, while a finalized determination has no generated and
+  delivered outcome letter. The `preflight` success message now tells the agent to
+  continue with the remaining steps instead of "verify before continuing".
 - `claim_done` ends the `openai-agents` run once accepted (first call after a terminal
   workflow action, or any second call); a premature first call gets one pushback. A
   Qwen trial had called it 49 times and hit the turn cap.

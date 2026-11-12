@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from chi_bench.experiment.agents.mechanisms.hooks import (
+    completion_hook,
     consent_gate_hook,
     criteria_ledger_hook,
     mech_common,
@@ -427,6 +428,7 @@ def test_observer_logs_calls_and_captures_outreach(state: Path) -> None:
         "criteria_ledger_hook.py",
         "consent_gate_hook.py",
         "observe_hook.py",
+        "completion_hook.py",
     ],
 )
 def test_scripts_run_standalone_with_isolated_python(script: str, state: Path) -> None:
@@ -483,3 +485,86 @@ def test_consent_gate_coaches_pacing_on_patient_overload(state: Path, capsys) ->
     payload["tool_response"] = {"patient_response": "Sure, the morning one I take every day."}
     assert consent_gate_hook.post_tool_use(payload) == 0
     assert capsys.readouterr().out == ""
+
+
+# ── completion (Stop hook) ─────────────────────────────────────────────
+
+
+def _stop() -> dict:
+    return {"hook_event_name": "Stop", "session_id": "s1", "stop_hook_active": False}
+
+
+def _observe(state: Path, *tools: str, ok: bool = True) -> None:
+    state.mkdir(parents=True, exist_ok=True)
+    with (state / "events.jsonl").open("a") as fh:
+        for tool in tools:
+            fh.write(json.dumps({"kind": "tool_call", "tool": tool, "ok": ok}) + "\n")
+
+
+def test_completion_blocks_stop_after_finalize_without_letters(state: Path, capsys) -> None:
+    _observe(
+        state, "p2p_session_submit_summary", "determination_finalize", "determination_get_summary"
+    )
+    assert completion_hook.stop(_stop()) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["decision"] == "block"
+    assert "After `determination.finalize`, still missing" in out["reason"]
+    assert "payer_letter_center.generate_approval or" in out["reason"]
+    assert "payer_letter_center.deliver" in out["reason"]
+
+
+def test_completion_allows_stop_when_letter_generated_and_delivered(state: Path, capsys) -> None:
+    _observe(
+        state,
+        "determination_finalize",
+        "payer_letter_center_generate_denial",
+        "payer_letter_center_deliver",
+    )
+    assert completion_hook.stop(_stop()) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_completion_requires_delivery_and_ignores_failed_calls(state: Path, capsys) -> None:
+    _observe(state, "determination_finalize", "payer_letter_center_generate_approval")
+    _observe(state, "payer_letter_center_deliver", ok=False)
+    completion_hook.stop(_stop())
+    reason = json.loads(capsys.readouterr().out)["reason"]
+    assert "payer_letter_center.deliver" in reason and "generate_approval" not in reason
+
+
+def test_completion_does_nothing_without_a_trigger(state: Path, capsys) -> None:
+    _observe(state, "triage_set_disposition", "review_save_md_review")
+    assert completion_hook.stop(_stop()) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_completion_block_limit_prevents_loops(state: Path, capsys, monkeypatch) -> None:
+    monkeypatch.delenv("CHI_BENCH_MECH_COMPLETION_MAX_BLOCKS", raising=False)
+    _observe(state, "determination_finalize")
+    for _ in range(2):
+        completion_hook.stop(_stop())
+        assert json.loads(capsys.readouterr().out)["decision"] == "block"
+    completion_hook.stop(_stop())
+    assert capsys.readouterr().out == ""  # third stop is allowed
+    kinds = [e["kind"] for e in mech_common.load_jsonl(state / "events.jsonl")]
+    assert kinds.count("deny") == 2 and kinds[-1] == "allow"
+
+
+def test_completion_ignores_subagent_stops(state: Path, capsys, monkeypatch) -> None:
+    import io
+
+    _observe(state, "determination_finalize")
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"hook_event_name": "SubagentStop"})))
+    assert completion_hook.main() == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_preflight_success_feedback_points_to_remaining_steps(state: Path, capsys) -> None:
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "preflight.json").write_text("{}")
+    preflight_hook.post_tool_use(
+        _mcp("determination.finalize", {"case_id": "C1"}, "PostToolUse", {"status": "approved"})
+    )
+    context = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert "continue with the remaining workflow steps" in context
+    assert "before continuing" not in context

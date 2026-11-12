@@ -306,6 +306,11 @@ Configs:
   blocked at once, the handbook search missed, and the model's next reply was reasoning-only;
   the SDK took that as the final answer at turn 14 of 80. Keep all notices templated on tool
   names; never add task-specific content (Cup circumvention rule).
+- **On `claude-code`/`claude-code-mechanisms`, the openai-agents continuation fixes do not apply;
+  use the `completion` mechanism (Stop hook, max 2 blocks) for "stopped before the workflow
+  finished".** **Why:** Sonnet 5.5 P2P trials finalized the determination and stopped without the
+  outcome letter (only `outcome.letter_types` failed); the old preflight "verify before
+  continuing" wording made all 6 mechanisms-arm trials verify and stop.
 - **LiteLLM/vLLM route:** `model: litellm/<id>` or `agent_kwargs: {provider_route: litellm}` with
   `LITELLM_BASE_URL` (+ optional `LITELLM_API_KEY`) works for `openai-agents` (any OpenAI-compatible
   root; vLLM directly) and `claude-code-mechanisms` (LiteLLM Anthropic `/v1/messages` proxy root).

@@ -13,6 +13,7 @@ The same mechanisms also run on `openai-agents` for any OpenAI-compatible model;
 | `preflight` | 1 — executable preflight | Terminal actions (submit, finalize, appeal, respond-to-pend, deliver, complete assessment, finalize care plan, disenroll, P2P summary) are blocked until `preflight.json` names the tool, has `ready: true`, and every check is `pass` with evidence or `na`. After success the preflight is archived and the agent is told to confirm state with a read-only call; after an error it is told to repair input first. | PreToolUse + PostToolUse on chi-bench tools |
 | `policy_trace` | 2 — traceable policy use | Final decision calls (scope note below) require `policy_trace.jsonl` entries whose `source_file` resolves inside the handbook and whose `quote` appears verbatim in that file. Ships the `policy-locator` skill and `policy_locate.py` (keyword search over `references/**/*.md`). Logs handbook reads to `policy_reads.jsonl`. | PreToolUse on chi-bench tools; PostToolUse on `Read`/`Bash` |
 | `criteria_ledger` | 3 — reasoning before execution | Final decision calls (scope note below) require `criteria_ledger.json`: every criterion has text, a policy source, `met` ∈ {yes, no, unknown}, chart evidence for yes/no, and a next action for unknown; a ledger for another case is rejected. | PreToolUse on chi-bench tools |
+| `completion` | — finish before stopping | A Stop hook blocks ending the session (at most twice) while a finalized determination lacks a generated and delivered outcome letter. Details below. | Stop |
 | `consent_gate` | 4 — patient autonomy | Not a stop rule (the rubric still requires affirmative enrollment). Ending an outreach call with `consent_obtained: true` or `engagement_status: engaged` requires `consent_record.json` with a verbatim patient quote that appears in the captured outreach turns. Refusal language in a patient reply triggers coaching: acknowledge, do not probe, one low-commitment option. A care-manager turn with three or more questions, or an overloaded patient reply, triggers pacing coaching: one narrow topic per turn with fresh permission. | PreToolUse + PostToolUse on `cm_outreach.*` |
 
 **Scope of the decision gates.** `policy_trace` and `criteria_ledger` fire only on final
@@ -24,6 +25,20 @@ and (policy_trace only) `cm_intake.disenroll_case`. Intermediate saves such as
 `cm_care_plan.save_care_plan` are not gated, so the agent can draft and revise freely. In the
 `pa_t019` mechanisms run both gates fired on an unnecessary re-save of the physician review and
 the trial never recovered; the gates now wait for the call that actually commits the decision.
+
+`completion` adds a Claude Code **Stop** hook. When the agent tries to end the session it
+reads the observer's successful tool calls and checks follow-on rules: once
+`determination.finalize` has succeeded, an outcome letter (`payer_letter_center.generate_approval`,
+`generate_denial` or `generate_pend`) and `payer_letter_center.deliver` must also have succeeded.
+If not, the stop is blocked with a templated reason naming the missing actions. At most
+`CHI_BENCH_MECH_COMPLETION_MAX_BLOCKS` (default 2) stops are blocked, so it cannot loop; sub-agent
+stops are never blocked. Evidence: in the November Sonnet 5.5 UM runs every failing P2P trial
+(t016, t019, t036) finalized the determination and stopped without a letter, failing only
+`outcome.letter_types`; every passing one went on to generate and deliver it.
+
+The `preflight` success message now says to confirm the state *and then continue* with the
+remaining steps. Its earlier wording ("verify … before continuing") was followed in all 6
+mechanisms-arm P2P trials by a `determination.get_summary` call and an immediate stop.
 
 An always-on observer (`observe_hook.py`) is added whenever any mechanism is active. It
 writes one `tool_call` event per call and captures outreach turns; it never blocks.

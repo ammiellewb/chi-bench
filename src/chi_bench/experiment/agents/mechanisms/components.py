@@ -30,7 +30,7 @@ SKILLS_SUBDIR = "skills"
 DEFAULT_STATE_DIR = "/logs/agent/mechanisms"
 DEFAULT_HANDBOOK_ROOT = "/workspace/skills/managed-care-operations-handbook"
 
-HookEvent = Literal["PreToolUse", "PostToolUse"]
+HookEvent = Literal["PreToolUse", "PostToolUse", "Stop"]
 
 # Chi-bench tools arrive either as native MCP tools (``mcp__<server>__ns.method``)
 # or, in CLI mode, as ``Bash`` running ``npx mcporter call ...``. Scripts filter
@@ -70,7 +70,9 @@ targets the intended case and outcome. The gate rejects any `fail`, any `pass` w
 evidence, and a preflight written for a different tool or case. After the action succeeds \
 the preflight is archived; confirm the new state with a read-only call and append \
 `{{"tool", "observed_status"}}` to `{state}/postcheck.jsonl`. If the action errors, fix the \
-input before doing anything else."""
+input before doing anything else. A terminal action is rarely the last step: after \
+confirming its state, continue with the remaining workflow steps (for example generating and \
+delivering the letters or notifications the outcome requires)."""
 
 _POLICY_TRACE_PROMPT = """\
 ### Mechanism: traceable policy use
@@ -118,6 +120,15 @@ several questions in one message. Keep `{state}/consent_record.json` current:
 Ending a call with `consent_obtained: true` or `engagement_status: engaged` is gated on this \
 record: the quote must be the patient's own affirmative words from the transcript. Without \
 an explicit agreement, record `tentative` or `refused` with `consent_obtained: false`."""
+
+_COMPLETION_PROMPT = """\
+### Mechanism: finish the workflow before stopping
+Before you end the session, check that every follow-on step of the actions you took is done. \
+In particular, a finalized determination needs its outcome letter (approval, denial or pend, \
+matching the decision) generated and delivered, plus any member notification the handbook \
+requires. A stop hook checks this from your tool calls and blocks ending the session when a \
+required step is missing; if the handbook says a step does not apply, say so in your final \
+message."""
 
 _POLICY_LOCATOR_SKILL = """\
 ---
@@ -178,6 +189,13 @@ MECHANISMS: dict[str, Mechanism] = {
         ),
     ),
 }
+
+MECHANISMS["completion"] = Mechanism(
+    name="completion",
+    summary="Block ending the session while a finalized decision lacks its follow-on steps.",
+    prompt=_COMPLETION_PROMPT,
+    hooks=(HookSpec("Stop", "", "completion_hook.py"),),
+)
 
 OBSERVER = Mechanism(
     name="observe",
@@ -271,18 +289,19 @@ def build_settings(
         components.append(OBSERVER)
     for mech in components:
         for spec in mech.hooks:
-            hooks.setdefault(spec.event, []).append(
-                {
-                    "matcher": spec.matcher,
-                    "hooks": [
-                        {
-                            "type": "command",
-                            "command": _hook_command(bin_dir, spec.script),
-                            "timeout": spec.timeout_sec,
-                        }
-                    ],
-                }
-            )
+            entry: dict = {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": _hook_command(bin_dir, spec.script),
+                        "timeout": spec.timeout_sec,
+                    }
+                ],
+            }
+            # Stop hooks take no matcher; tool events match on tool name.
+            if spec.event != "Stop":
+                entry = {"matcher": spec.matcher, **entry}
+            hooks.setdefault(spec.event, []).append(entry)
     return {"hooks": hooks} if hooks else {}
 
 

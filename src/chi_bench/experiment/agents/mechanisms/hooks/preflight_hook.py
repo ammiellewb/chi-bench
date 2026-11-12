@@ -186,10 +186,12 @@ def post_tool_use(payload: dict[str, Any]) -> int:
     namespace = wanted.split(".", 1)[0]
     hint = VERIFY_HINTS.get(namespace, "the namespace's read-only get/status tool")
     return mc.post_feedback(
-        f"[preflight] `{wanted}` succeeded. Verify the resulting state with {hint} before "
-        f'continuing, and append {{"tool": "{wanted}", "observed_status": ...}} to '
-        f"{state / POSTCHECK_FILE}. The consumed preflight was archived; a new "
-        "preflight.json is required before the next terminal action.",
+        f"[preflight] `{wanted}` succeeded. Confirm the resulting state with {hint} and "
+        f'append {{"tool": "{wanted}", "observed_status": ...}} to '
+        f"{state / POSTCHECK_FILE}, then continue with the remaining workflow steps: this "
+        "action is rarely the last one (for example, a finalized decision still needs its "
+        "outcome letters or notifications generated and delivered). The consumed preflight "
+        "was archived; a new preflight.json is required before the next terminal action.",
         mechanism=MECHANISM,
         tool=wanted,
         prompt=False,

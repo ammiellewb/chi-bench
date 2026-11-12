@@ -278,7 +278,7 @@ async def test_mechanism_gate_blocks_then_feeds_back(tmp_path: Path, monkeypatch
     allowed = await tool.on_invoke_tool(None, '{"case_id": "C1"}')
     assert calls == ['{"case_id": "C1"}']
     assert allowed.startswith('{"status": "submitted"}')
-    assert "[preflight]" in allowed and "Verify the resulting state" in allowed
+    assert "[preflight]" in allowed and "continue with the remaining workflow steps" in allowed
     assert not (state / "preflight.json").exists()
     kinds = [r["kind"] for r in mech_common.load_jsonl(state / "events.jsonl")]
     # A denied call never executes, so (as in Claude Code) no PostToolUse
