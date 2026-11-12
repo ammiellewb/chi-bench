@@ -35,6 +35,7 @@ from typing import Any
 
 from chi_bench.experiment.agents.nemotron_tool_protocol import NEMOTRON_ULTRA_256K_MODEL
 from chi_bench.experiment.agents.openai_agents_resilience import (
+    CLAIM_DONE_TOOL,
     DEFAULT_HANDBOOK_ROOT,
     DEFAULT_PROGRESS_TOOLS,
     DEFAULT_STATE_DIR,
@@ -47,6 +48,8 @@ from chi_bench.experiment.agents.openai_agents_resilience import (
     StageLog,
     ToolCallRewrite,
     ToolGuard,
+    build_claim_done_behavior,
+    install_claim_done_policy,
     parse_tool_list,
 )
 
@@ -756,7 +759,11 @@ async def run_agent(instruction: str, mcp_url: str, logs_dir: Path = DEFAULT_LOG
     _install_oversize_output_patch(logs_dir)
     _install_mcp_tool_name_sanitizer()
     _set_active_tool_guard(guard)
-    local_tools = [guard.wrap(tool) for tool in build_local_tools(logs_dir)]
+    local_tools = []
+    for tool in build_local_tools(logs_dir):
+        if getattr(tool, "name", None) == CLAIM_DONE_TOOL:
+            install_claim_done_policy(tool, nudges)
+        local_tools.append(guard.wrap(tool))
     local_tools.append(guard.wrap(build_unknown_tool_sink()))
     instructions = SYSTEM_PROMPT
     if gate is not None:
@@ -803,6 +810,8 @@ async def run_agent(instruction: str, mcp_url: str, logs_dir: Path = DEFAULT_LOG
                 reasoning_effort,
                 separate_reasoning=is_tinker_chat,
             ),
+            # claim_done ends the run once accepted; see build_claim_done_behavior.
+            tool_use_behavior=build_claim_done_behavior(nudges),
         )
 
         print(f"Running agent with model={model}, max_turns={max_turns}")

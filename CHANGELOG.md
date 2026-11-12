@@ -33,6 +33,9 @@
   Simultaneous blocks from several gates arrive as one templated message.
 - `payer_letter_center.generate_notification` states in its description that it is
   the only member-notification tool.
+- `claim_done` ends the `openai-agents` run once accepted (first call after a terminal
+  workflow action, or any second call); a premature first call gets one pushback. A
+  Qwen trial had called it 49 times and hit the turn cap.
 
 ## 1.1.0 — 2026-10-06
 

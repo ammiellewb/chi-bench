@@ -297,8 +297,10 @@ Configs:
   diagnose with `agent/stages.jsonl`, the `stages`/`partial_usage` fields in `run_result.json`,
   and the `requested_name`/`unresolved_tool` fields in `trace.jsonl`. **Why:** 33 of 100 saved
   Qwen/Gemma trials ended on `ModelBehaviorError` for `local_fs_read`-style names.
-- **`openai-agents` never ends on an empty reply and asks for `claim_done` before accepting a
-  text-only final reply** (`empty_reply_retries`=1, `completion_checks`=2 by default; 0 disables).
+- **`openai-agents` never ends on an empty reply, asks for `claim_done` before accepting a
+  text-only final reply, and ends the run on an accepted `claim_done`** (`empty_reply_retries`=1,
+  `completion_checks`=2 by default; 0 disables; a premature `claim_done` is pushed back once,
+  a second call always ends the run).
   The decision gates (`policy_trace`, `criteria_ledger`) fire only on final decision calls, not
   on intermediate saves. **Why:** the `pa_t019` mechanisms run re-saved the MD review, both gates
   blocked at once, the handbook search missed, and the model's next reply was reasoning-only;

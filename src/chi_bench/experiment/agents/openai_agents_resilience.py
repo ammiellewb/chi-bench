@@ -116,6 +116,7 @@ DEFAULT_TERMINAL_TOOLS: tuple[str, ...] = (
     "cm_intake.disenroll_case",
 )
 CLAIM_DONE_TOOL = "local-claim_done"
+CLAIM_DONE_ACCEPTED = "task marked as done"
 
 _COLLAPSE_RE = re.compile(r"[^a-z0-9]+")
 _WORD_SPLIT_RE = re.compile(r"[^a-z0-9]+")
@@ -273,6 +274,8 @@ class NudgePolicy:
     terminal_tools: tuple[str, ...] = DEFAULT_TERMINAL_TOOLS
     progress_seen: bool = False
     claim_done_seen: bool = False
+    claim_done_calls: int = 0
+    claim_done_accepted: bool = False
     terminal_seen: list[str] = field(default_factory=list)
     injected: list[tuple[int, dict[str, Any]]] = field(default_factory=list)
     _progress_sent: bool = False
@@ -294,6 +297,28 @@ class NudgePolicy:
         terminal = self._terminal_keys.get(key)
         if terminal and terminal not in self.terminal_seen:
             self.terminal_seen.append(terminal)
+
+    def accept_claim_done(self) -> tuple[bool, str]:
+        """Decide whether a ``claim_done`` call ends the run.
+
+        Accepted on the first call once a terminal workflow action has been
+        observed (or when no terminal set is configured); a premature first
+        call gets one templated pushback, and a second call always ends the
+        run so a model that keeps re-calling claim_done cannot loop (one Qwen
+        trial called it 49 times and hit the turn cap).
+        """
+        self.claim_done_calls += 1
+        if self.terminal_seen or not self.terminal_tools or self.claim_done_calls >= 2:
+            self.claim_done_accepted = True
+            return True, CLAIM_DONE_ACCEPTED
+        return False, (
+            f"{NUDGE_PREFIX} claim_done not accepted yet: no terminal workflow action has been "
+            "observed, and this kind of workflow usually ends with one of: "
+            + ", ".join(self.terminal_tools[:4])
+            + ", …. Take the remaining steps (record the decision, finalize, generate and "
+            "deliver required letters or notifications, submit the summary), then call "
+            "claim_done again. A second claim_done always ends the run."
+        )
 
     def continuation(self, kind: str) -> str | None:
         """Notice for a reply that would otherwise end the run; None once the budget is spent."""
@@ -614,7 +639,7 @@ class ResilientModel(_ModelBase):  # type: ignore[misc,valid-type]
             return None
         if not _message_text(response).strip():
             return "empty"
-        if self._nudges is not None and not self._nudges.claim_done_seen:
+        if self._nudges is not None and not self._nudges.claim_done_accepted:
             return "final_text"
         return None
 
@@ -880,6 +905,42 @@ class MechanismGate:
                         )
                     )
         return outcomes
+
+
+# ---------------------------------------------------------------------------
+# claim_done ends the run
+# ---------------------------------------------------------------------------
+def install_claim_done_policy(tool: Any, nudges: NudgePolicy) -> Any:
+    """Make ``local-claim_done`` consult :meth:`NudgePolicy.accept_claim_done`."""
+
+    async def on_invoke(_context: Any, _params: str) -> str:
+        _accepted, message = nudges.accept_claim_done()
+        return message
+
+    tool.on_invoke_tool = on_invoke
+    return tool
+
+
+def build_claim_done_behavior(nudges: NudgePolicy) -> Callable[[Any, list[Any]], Any]:
+    """``Agent(tool_use_behavior=...)`` hook: end the run once claim_done is accepted.
+
+    The SDK keeps calling the model after any tool call, including claim_done,
+    so a model that never writes a final message re-calls claim_done until the
+    turn cap. Returning a final output here stops the loop at the accepted call.
+    """
+
+    def behavior(_context: Any, results: list[Any]) -> Any:
+        from agents import ToolsToFinalOutputResult
+
+        for result in results:
+            name = getattr(getattr(result, "tool", None), "name", None)
+            if name == CLAIM_DONE_TOOL and nudges.claim_done_accepted:
+                return ToolsToFinalOutputResult(
+                    is_final_output=True, final_output=str(getattr(result, "output", ""))
+                )
+        return ToolsToFinalOutputResult(is_final_output=False, final_output=None)
+
+    return behavior
 
 
 # ---------------------------------------------------------------------------

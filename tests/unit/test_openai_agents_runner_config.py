@@ -266,6 +266,7 @@ async def test_runner_selects_requested_sdk_api_without_changing_model_id(
     # whatever model the SDK resolves for it (explicit Tinker instance or
     # MultiProvider lookup) so tool-name resolution covers every route.
     assert agent_model == model
+    assert callable(captured["agents"][0]["tool_use_behavior"])
     provider = captured["run_configs"][0]["model_provider"]
     if uses_explicit_tinker_model:
         assert captured["chat_models"], (

@@ -550,7 +550,7 @@ async def test_completion_check_lists_expected_terminal_actions_and_stops(tmp_pa
 @pytest.mark.asyncio
 async def test_text_reply_after_claim_done_ends_normally(tmp_path: Path) -> None:
     nudges = NudgePolicy(max_turns=10)
-    nudges.observe_tool_call("local-claim_done")
+    nudges.claim_done_accepted = True
     inner = _InnerModel([_response(_msg("Done"))])
     model = ResilientModel(inner, stages=StageLog(tmp_path / "s.jsonl"), rewrites={}, nudges=nudges)
     await model.get_response(None, [{"role": "user", "content": "go"}], None, [], None, [], None)
@@ -600,6 +600,11 @@ async def test_sdk_run_continues_past_an_empty_reply(tmp_path: Path) -> None:
     )
 
     from chi_bench.experiment.agents.openai_agents_local_tools import build_local_tools
+    from chi_bench.experiment.agents.openai_agents_resilience import (
+        CLAIM_DONE_ACCEPTED,
+        build_claim_done_behavior,
+        install_claim_done_policy,
+    )
 
     class Scripted(Model):
         def __init__(self) -> None:
@@ -637,13 +642,23 @@ async def test_sdk_run_continues_past_an_empty_reply(tmp_path: Path) -> None:
             raise NotImplementedError
 
     stages = StageLog(tmp_path / "stages.jsonl")
-    nudges = NudgePolicy(max_turns=5)
+    nudges = NudgePolicy(max_turns=5, terminal_tools=())
     scripted = Scripted()
     provider = ResilientModelProvider(
         SimpleNamespace(get_model=lambda _name: scripted),
         wrap=lambda inner: ResilientModel(inner, stages=stages, rewrites={}, nudges=nudges),
     )
-    agent = agents.Agent(name="t", instructions="x", tools=build_local_tools(tmp_path), model="s")
+    tools = build_local_tools(tmp_path)
+    for tool in tools:
+        if tool.name == "local-claim_done":
+            install_claim_done_policy(tool, nudges)
+    agent = agents.Agent(
+        name="t",
+        instructions="x",
+        tools=tools,
+        model="s",
+        tool_use_behavior=build_claim_done_behavior(nudges),
+    )
     result = await agents.Runner.run(
         agent,
         input="go",
@@ -651,8 +666,124 @@ async def test_sdk_run_continues_past_an_empty_reply(tmp_path: Path) -> None:
         run_config=agents.RunConfig(model_provider=provider, tracing_disabled=True),
     )
 
-    assert result.final_output == "done"
-    assert scripted.calls == 3 and len(result.raw_responses) == 2
+    # The empty reply is continued; the accepted claim_done then ends the run
+    # without a further model call.
+    assert result.final_output == CLAIM_DONE_ACCEPTED
+    # Two model calls, but the empty reply and its continuation happen inside
+    # one SDK turn, so the SDK sees a single response carrying both usages.
+    assert scripted.calls == 2 and len(result.raw_responses) == 1
     # The continuation call's usage is folded into the SDK-visible response.
     assert result.raw_responses[0].usage.input_tokens == 6
     assert stages.summary()["continuations"] == 1 and nudges.claim_done_seen
+
+
+# ── claim_done ends the run ─────────────────────────────────────────────
+
+
+def test_claim_done_is_rejected_once_then_always_accepted() -> None:
+    from chi_bench.experiment.agents.openai_agents_resilience import CLAIM_DONE_ACCEPTED
+
+    nudges = NudgePolicy(max_turns=10)
+    accepted, message = nudges.accept_claim_done()
+    assert not accepted and "not accepted yet" in message
+    assert "auth.submit_authorization" in message
+    assert not nudges.claim_done_accepted
+    accepted, message = nudges.accept_claim_done()
+    assert accepted and message == CLAIM_DONE_ACCEPTED and nudges.claim_done_accepted
+
+    nudges = NudgePolicy(max_turns=10)
+    nudges.observe_tool_call("review__submit_md_case_decision")
+    assert nudges.accept_claim_done() == (True, CLAIM_DONE_ACCEPTED)
+
+    assert NudgePolicy(max_turns=10, terminal_tools=()).accept_claim_done()[0]
+
+
+@pytest.mark.asyncio
+async def test_sdk_run_ends_on_accepted_claim_done(tmp_path: Path) -> None:
+    agents = pytest.importorskip("agents")
+    from agents.items import ModelResponse
+    from agents.models.interface import Model
+    from agents.tool import FunctionTool
+    from agents.usage import Usage
+    from openai.types.responses import ResponseFunctionToolCall
+
+    from chi_bench.experiment.agents.openai_agents_local_tools import build_local_tools
+    from chi_bench.experiment.agents.openai_agents_resilience import (
+        CLAIM_DONE_ACCEPTED,
+        build_claim_done_behavior,
+        install_claim_done_policy,
+    )
+
+    async def finalize(_ctx: Any, _params: str) -> str:
+        return '{"status": "final"}'
+
+    terminal = FunctionTool(
+        name="determination__finalize",
+        description="finalize",
+        params_json_schema={"type": "object", "properties": {}, "additionalProperties": True},
+        on_invoke_tool=finalize,
+        strict_json_schema=False,
+    )
+
+    def call(call_id: str, name: str) -> ResponseFunctionToolCall:
+        return ResponseFunctionToolCall(
+            type="function_call", call_id=call_id, name=name, arguments="{}"
+        )
+
+    class Scripted(Model):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def get_response(self, system_instructions, input, *args, **kwargs):
+            self.calls += 1
+            script = {
+                1: [call("c1", "local-claim_done")],  # premature: rejected
+                2: [call("c2", "determination__finalize")],
+                3: [call("c3", "local-claim_done")],  # accepted: run ends here
+            }
+            output = script.get(self.calls, [])
+            return ModelResponse(
+                output=output,
+                usage=Usage(requests=1, input_tokens=1, output_tokens=1),
+                response_id=None,
+            )
+
+        def stream_response(self, *args, **kwargs):  # pragma: no cover
+            raise NotImplementedError
+
+    stages = StageLog(tmp_path / "stages.jsonl")
+    nudges = NudgePolicy(max_turns=10)
+    guard = ToolGuard(stages=stages)
+    tools = []
+    for tool in build_local_tools(tmp_path):
+        if tool.name == "local-claim_done":
+            install_claim_done_policy(tool, nudges)
+        tools.append(guard.wrap(tool))
+    tools.append(guard.wrap(terminal, mcp_name="determination.finalize"))
+    scripted = Scripted()
+    provider = ResilientModelProvider(
+        SimpleNamespace(get_model=lambda _name: scripted),
+        wrap=lambda inner: ResilientModel(inner, stages=stages, rewrites={}, nudges=nudges),
+    )
+    agent = agents.Agent(
+        name="t",
+        instructions="x",
+        tools=tools,
+        model="s",
+        tool_use_behavior=build_claim_done_behavior(nudges),
+    )
+    result = await agents.Runner.run(
+        agent,
+        input="go",
+        max_turns=10,
+        run_config=agents.RunConfig(model_provider=provider, tracing_disabled=True),
+    )
+
+    assert result.final_output == CLAIM_DONE_ACCEPTED
+    assert scripted.calls == 3  # the model is not called again after the accepted claim_done
+    outputs = [
+        item.output for item in result.new_items if type(item).__name__ == "ToolCallOutputItem"
+    ]
+    assert outputs[0].startswith("[harness notice] claim_done not accepted yet")
+    assert outputs[-1] == CLAIM_DONE_ACCEPTED
+    assert nudges.claim_done_calls == 2 and nudges.terminal_seen == ["determination.finalize"]

@@ -56,7 +56,7 @@ async def _on_claim_done(_context: RunContextWrapper, _params_str: str) -> Any:
 
 _tool_claim_done = FunctionTool(
     name="local-claim_done",
-    description="Signal that the task is complete. Call this once you are confident the user's request has been fully addressed.",
+    description="Signal that the task is complete. Call this once, after the final workflow action, when you are confident the user's request has been fully addressed. Accepting it ends the run; do not call it repeatedly.",
     params_json_schema={
         "type": "object",
         "properties": {},
